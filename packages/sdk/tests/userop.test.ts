@@ -19,7 +19,7 @@ assert.equal(inner.args[0], device);
 
 const proof = {
   proof: "0x1234" as Hex,
-  publicInputs: Array.from({ length: 8 }, (_, index) => `0x${index.toString(16).padStart(64, "0")}` as Hex),
+  publicInputs: Array.from({ length: 7 }, (_, index) => `0x${index.toString(16).padStart(64, "0")}` as Hex),
 };
 const signature = googleSignature(proof);
 assert.equal(signature.slice(0, 4), "0x01");

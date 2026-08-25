@@ -3,26 +3,20 @@ use noir_rsa::rsa::verify_sha256_pkcs1v15;
 use noir_rsa::types::RBN2048;
 use poseidon::poseidon2::Poseidon2;
 
-global MAX_HEADER: u32 = 128;
-global MAX_PAYLOAD: u32 = 1024;
+global MAX_HEADER: u32 = 96;
+global MAX_PAYLOAD: u32 = 735;
 global MAX_AUDIENCE: u32 = 128;
 global MAX_SUBJECT: u32 = 64;
-global HEADER_B64: u32 = 171;
-global PAYLOAD_B64: u32 = 1366;
-global MAX_SIGNING_INPUT: u32 = 1538;
+global HEADER_B64: u32 = 128;
+global PAYLOAD_B64: u32 = 980;
+global MAX_SIGNING_INPUT: u32 = 1109;
 
 global DOMAIN_IDENTITY: Field = 0x474f4f474c455f343333375f49445f5631;
 global ISSUER_ID: Field = 0x68747470733a2f2f6163636f756e74732e676f6f676c652e636f6d;
-global REGISTER_DEVICE: Field = 1;
-
 fn main(
-    device_address: Field,
     device_address_bytes: [u8; 20],
-    chain_id: Field,
     chain_id_bytes: [u8; 32],
-    factory_address: Field,
     factory_address_bytes: [u8; 20],
-    valid_until: Field,
     valid_until_bytes: [u8; 8],
     header: [u8; MAX_HEADER],
     header_len: u32,
@@ -44,7 +38,7 @@ fn main(
     modulus_limbs: [u128; 18],
     redc_limbs: [u128; 18],
     signature_limbs: [u128; 18],
-) -> pub [Field; 8] {
+) -> pub [Field; 7] {
     assert(header_len <= MAX_HEADER);
     assert(payload_len <= MAX_PAYLOAD);
     assert((audience_len > 0) & (audience_len <= MAX_AUDIENCE));
@@ -61,6 +55,10 @@ fn main(
     assert_json_string(payload, payload_len, audience_offset, [34, 97, 117, 100, 34, 58, 34], audience, audience_len);
     assert_json_string(payload, payload_len, subject_offset, [34, 115, 117, 98, 34, 58, 34], subject, subject_len);
 
+    let device_address = bytes_to_field(device_address_bytes);
+    let chain_id = bytes_to_field(chain_id_bytes);
+    let factory_address = bytes_to_field(factory_address_bytes);
+    let valid_until = bytes_to_field(valid_until_bytes);
     let nonce_digest = login_nonce(
         chain_id_bytes,
         factory_address_bytes,
@@ -68,10 +66,6 @@ fn main(
         valid_until_bytes,
         login_randomness,
     );
-    assert(bytes_to_field(chain_id_bytes) == chain_id);
-    assert(bytes_to_field(factory_address_bytes) == factory_address);
-    assert(bytes_to_field(device_address_bytes) == device_address);
-    assert(bytes_to_field(valid_until_bytes) == valid_until);
     assert_nonce_claim(payload, payload_len, nonce_offset, nonce_digest);
     let jwt_exp = assert_exp_claim(payload, payload_len, exp_offset, exp_len);
     assert(jwt_exp >= valid_until as u64);
@@ -109,7 +103,6 @@ fn main(
         factory_address,
         valid_until,
         computed_google_key_hash,
-        REGISTER_DEVICE,
     ]
 }
 

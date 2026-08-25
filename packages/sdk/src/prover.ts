@@ -3,10 +3,10 @@ import { Noir, type CompiledCircuit, type InputMap } from "@noir-lang/noir_js";
 import { poseidon2HashAsync } from "@zkpassport/poseidon2";
 import { bytesToHex, hexToBytes, type Hex } from "viem";
 import circuitArtifact from "./generated/google_jwt.json";
-import type { GoogleLoginResult } from "./google";
+import type { GoogleClaims, GoogleLoginResult } from "./google";
 
-const MAX_HEADER = 128;
-const MAX_PAYLOAD = 1024;
+const MAX_HEADER = 96;
+const MAX_PAYLOAD = 735;
 const MAX_AUDIENCE = 128;
 const MAX_SUBJECT = 64;
 const DOMAIN_IDENTITY = 0x474f4f474c455f343333375f49445f5631n;
@@ -33,30 +33,104 @@ interface ParsedToken {
   signature: Uint8Array;
 }
 
+interface GoogleProverRuntime {
+  noir: Noir;
+  backend: UltraHonkBackend;
+}
+
+let proverRuntimePromise: Promise<GoogleProverRuntime> | undefined;
+let proofQueue: Promise<void> = Promise.resolve();
+
+export async function warmGoogleProver(): Promise<void> {
+  await getGoogleProverRuntime();
+}
+
 export async function proveGoogleAuthorization(
   login: GoogleLoginResult,
 ): Promise<GoogleProof> {
-  const inputs = await buildGoogleCircuitInputs(login);
-  const noir = new Noir(circuitArtifact as CompiledCircuit);
-  const { witness } = await noir.execute(inputs);
-  const api = await Barretenberg.new({
-    backend: BackendType.Wasm,
-    threads: 4,
-    // Values are 64 KiB WebAssembly pages: start at 64 MiB and permit growth
-    // to 2 GiB for the ~331k-gate RSA/JWT circuit.
-    memory: { initial: 1024, maximum: 32768 },
-  });
-  try {
-    const backend = new UltraHonkBackend(circuitArtifact.bytecode, api);
-    const result = await backend.generateProof(witness, {
+  const [inputs, runtime] = await Promise.all([
+    buildGoogleCircuitInputs(login),
+    getGoogleProverRuntime(),
+  ]);
+
+  return enqueueProof(async () => {
+    const { witness } = await runtime.noir.execute(inputs);
+    const result = await runtime.backend.generateProof(witness, {
       verifierTarget: "evm",
     });
     return {
       proof: bytesToHex(result.proof),
       publicInputs: result.publicInputs.map(normalizeField),
     };
-  } finally {
+  });
+}
+
+/** Resolves the deterministic identity locally so callers can check an existing device before proving. */
+export async function googleIdentityCommitment(claims: GoogleClaims): Promise<Hex> {
+  if (claims.iss !== "https://accounts.google.com")
+    throw new Error("Unsupported Google issuer");
+  if (!claims.sub || claims.sub.length > MAX_SUBJECT)
+    throw new Error("Google subject is missing or too long");
+  const subjectBytes = new TextEncoder().encode(claims.sub);
+  const subjectFields = packSubject(subjectBytes);
+  const identity = await poseidon2HashAsync([
+    DOMAIN_IDENTITY,
+    ISSUER_ID,
+    ...subjectFields,
+    BigInt(subjectBytes.length),
+  ]);
+  return normalizeField(field(identity));
+}
+
+function getGoogleProverRuntime(): Promise<GoogleProverRuntime> {
+  if (proverRuntimePromise) return proverRuntimePromise;
+
+  const initialization = createGoogleProverRuntime();
+  proverRuntimePromise = initialization;
+  void initialization.catch(() => {
+    if (proverRuntimePromise === initialization) proverRuntimePromise = undefined;
+  });
+  return initialization;
+}
+
+async function createGoogleProverRuntime(): Promise<GoogleProverRuntime> {
+  const api = await Barretenberg.new({
+    backend: BackendType.WasmWorker,
+    threads: desiredProverThreads(),
+    // Values are 64 KiB WebAssembly pages: start at 64 MiB and permit growth
+    // to 2 GiB for the ~262k-gate RSA/JWT circuit.
+    memory: { initial: 1024, maximum: 32768 },
+  });
+  try {
+    const backend = new UltraHonkBackend(circuitArtifact.bytecode, api);
+    return {
+      noir: new Noir(circuitArtifact as CompiledCircuit),
+      backend,
+    };
+  } catch (error) {
     await api.destroy();
+    throw error;
+  }
+}
+
+function desiredProverThreads(): number {
+  const available = typeof navigator === "undefined"
+    ? 1
+    : navigator.hardwareConcurrency || 1;
+  return Math.max(1, Math.min(available, 8));
+}
+
+async function enqueueProof<T>(task: () => Promise<T>): Promise<T> {
+  const previous = proofQueue;
+  let release!: () => void;
+  proofQueue = new Promise((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await task();
+  } finally {
+    release();
   }
 }
 
@@ -92,13 +166,7 @@ export async function buildGoogleCircuitInputs(
 
   const modulusValue = bytesToBigInt(modulus);
   const redc = (1n << 4102n) / modulusValue;
-  const subjectFields = packSubject(subjectBytes);
-  const identity = await poseidon2HashAsync([
-    DOMAIN_IDENTITY,
-    ISSUER_ID,
-    ...subjectFields,
-    BigInt(subjectBytes.length),
-  ]);
+  const identity = BigInt(await googleIdentityCommitment(login.claims));
   const audienceHash = await low248Sha(audienceBytes);
   const keyHash = await googleKeyCommitment(modulus);
   const device = BigInt(login.challenge.deviceAddress);
@@ -107,13 +175,9 @@ export async function buildGoogleCircuitInputs(
   const validUntil = BigInt(login.challenge.proofExpiry);
 
   return {
-    device_address: field(device),
     device_address_bytes: byteInputs(bigIntToBytes(device, 20)),
-    chain_id: field(chainId),
     chain_id_bytes: byteInputs(bigIntToBytes(chainId, 32)),
-    factory_address: field(factory),
     factory_address_bytes: byteInputs(bigIntToBytes(factory, 20)),
-    valid_until: field(validUntil),
     valid_until_bytes: byteInputs(bigIntToBytes(validUntil, 8)),
     header: byteInputs(pad(headerBytes, MAX_HEADER)),
     header_len: headerBytes.length,
@@ -155,7 +219,6 @@ export async function buildGoogleCircuitInputs(
       factory,
       validUntil,
       keyHash,
-      1n,
     ].map(field),
   };
 }

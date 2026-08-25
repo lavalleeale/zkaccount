@@ -52,6 +52,7 @@ declare global {
           initialize(config: {
             client_id: string;
             nonce: string;
+            use_fedcm_for_button?: boolean;
             callback: (response: { credential: string }) => void;
           }): void;
           renderButton(parent: HTMLElement, options: Record<string, unknown>): void;
@@ -104,6 +105,9 @@ export async function loginWithGoogle(options: GoogleLoginOptions): Promise<Goog
     google.accounts.id.initialize({
       client_id: options.clientId,
       nonce: challenge.nonce,
+      // FedCM does not depend on popup/opener communication, so it remains
+      // compatible with the COOP isolation required by the threaded prover.
+      use_fedcm_for_button: true,
       callback: ({ credential }) => {
         try {
           const claims = parseGoogleIdToken(credential);

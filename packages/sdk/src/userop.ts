@@ -386,7 +386,7 @@ function dummyDeviceSignature(): Hex {
 }
 
 function validateProofContext(proof: GoogleProof, device: Address, factory: Address): void {
-  if (proof.publicInputs.length !== 8) throw new Error("Google proof must contain exactly eight public inputs");
+  if (proof.publicInputs.length !== 7) throw new Error("Google proof must contain exactly seven public inputs");
   const proofDevice = getAddress(`0x${proof.publicInputs[2].slice(-40)}`);
   const proofFactory = getAddress(`0x${proof.publicInputs[4].slice(-40)}`);
   if (!isAddressEqual(proofDevice, device)) throw new Error("Google proof is bound to a different device");

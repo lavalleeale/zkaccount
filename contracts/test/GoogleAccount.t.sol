@@ -191,7 +191,7 @@ contract GoogleAccountTest {
         bytes32 audience,
         uint48 validUntil
     ) private view returns (PackedUserOperation memory op) {
-        bytes32[] memory inputs = new bytes32[](8);
+        bytes32[] memory inputs = new bytes32[](7);
         inputs[0] = IDENTITY;
         inputs[1] = audience;
         inputs[2] = bytes32(uint256(uint160(authorizedDevice)));
@@ -199,7 +199,6 @@ contract GoogleAccountTest {
         inputs[4] = bytes32(uint256(uint160(address(factory))));
         inputs[5] = bytes32(uint256(validUntil));
         inputs[6] = GOOGLE_KEY;
-        inputs[7] = bytes32(uint256(1));
 
         bytes memory inner = abi.encodeCall(account.addDevice, (authorizedDevice));
         op.sender = address(account);

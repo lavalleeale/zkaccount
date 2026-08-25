@@ -8,7 +8,7 @@ const proverPath = resolve(circuitDir, "Prover.toml");
 const generator = resolve(root, "circuits/scripts/generate-fixture.ts");
 const tsx = resolve(root, "node_modules/.bin/tsx");
 const nargo = process.env.NARGO_BIN ?? "nargo";
-const wrapper = process.env.NARGO_WRAPPER;
+const wrapper = process.env.ZK_BIN_WRAPPER;
 
 function generate(variant?: string): string {
   const result = spawnSync(tsx, variant ? [generator, variant] : [generator], { cwd: root, encoding: "utf8" });

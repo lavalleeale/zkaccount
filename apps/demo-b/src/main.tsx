@@ -4,9 +4,11 @@ import { formatEther, type Address } from "viem";
 import {
   Google4337Client,
   createPasskeyDeviceKey,
+  googleIdentityCommitment,
   loginWithGoogle,
   proveGoogleAuthorization,
   unlockPasskeyDeviceKey,
+  warmGoogleProver,
   type DeviceKey,
   type GoogleLoginResult,
   type GoogleProof,
@@ -39,9 +41,12 @@ function App() {
         ? await createPasskeyDeviceKey(passkeyOptions)
         : await unlockPasskeyDeviceKey(passkeyOptions);
       setDevice(nextDevice);
+      setLogin(undefined);
+      setProof(undefined);
+      setAuthorized(false);
       setStatus(nextDevice.protection === "passkey-prf"
         ? "Passkey ready. Continue with Google to recover the smart account."
-        : "Passkey ready using this browser's encrypted fallback key. Continue with Google.");
+        : "Passkey ready with a memory-only device key. Continue with Google.");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
@@ -66,18 +71,32 @@ function App() {
       return;
     }
     setBusy(true);
+    setProof(undefined);
+    setAuthorized(false);
     setStatus("Authenticating with Google");
     try {
       const result = await loginWithGoogle({ clientId, factory, chainId: 84532, button: button.current, device });
       setLogin(result);
       setDevice(result.device);
+      setStatus("Checking whether the Demo B device is already authorized");
+      const identity = await googleIdentityCommitment(result.claims);
+      const predicted = await wallet.getAccountAddress(identity);
+      const [nextBalance, nextAuthorized] = await Promise.all([
+        wallet.getBalance(predicted),
+        wallet.isDeviceAuthorized(predicted, result.device.address),
+      ]);
+      setAccount(predicted);
+      setBalance(nextBalance);
+      setAuthorized(nextAuthorized);
+      if (nextAuthorized) {
+        setStatus("Demo B device is already authorized. No Google proof is needed.");
+        return;
+      }
+      setStatus("Device authorization is required. Warming up the prover");
+      await warmGoogleProver();
       setStatus("Generating proof in this independent origin");
       const generatedProof = await proveGoogleAuthorization(result);
       setProof(generatedProof);
-      const predicted = await wallet.getAccountAddress(generatedProof.publicInputs[0]);
-      setAccount(predicted);
-      setBalance(await wallet.getBalance(predicted));
-      setAuthorized(await wallet.isDeviceAuthorized(predicted, result.device.address));
       setStatus(bundlerUrl
         ? `Same identity resolved. Authorize Demo B's independent key on ${predicted}.`
         : `Account resolved. Configure VITE_BUNDLER_URL to submit the UserOperation.`);
@@ -151,7 +170,7 @@ function App() {
       <span>{account ?? "Authenticate with the same Google account used in Demo A"}</span>
       <span>Balance: {formatEther(balance)} Base Sepolia ETH</span>
       <span>Demo B passkey device: {device?.address ?? "Create or unlock a passkey"}</span>
-      {device && <span>Key protection: {device.protection === "passkey-prf" ? "passkey PRF" : "encrypted browser fallback"}</span>}
+      {device && <span>Key protection: {device.protection === "passkey-prf" ? "passkey PRF" : "memory only (not recoverable after reload)"}</span>}
       <span>Authorized: {authorized ? "yes" : "no"}</span>
     </section>
     {login && <section>
@@ -166,7 +185,7 @@ function App() {
       <span>Compare the smart-account address—not browser state—with Demo A.</span>
     </section>}
     {!bundlerUrl && <small>Set VITE_BUNDLER_URL to a Base Sepolia ERC-4337 bundler supporting EntryPoint v0.8.</small>}
-    <small>PRF-capable passkeys derive the device key in memory. If PRF is unavailable, this browser stores only an AES-GCM-encrypted device key in localStorage and its non-exportable wrapping key in IndexedDB.</small>
+    <small>PRF-capable passkeys deterministically derive the device key in memory. If PRF is unavailable, a random device key exists only for this page session and is never stored.</small>
   </main>;
 }
 

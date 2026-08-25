@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -28,6 +28,10 @@ run(bb, [
   "write_solidity_verifier", "-k", "target/evm/vk", "-o", "target/evm/Verifier.sol",
   "-t", "evm", "--optimized",
 ]);
+run(bb, [
+  "prove", "-b", "target/google_jwt.json", "-w", "target/fixture.gz",
+  "-k", "target/evm/vk", "-o", "target/evm", "-t", "evm", "--verify",
+]);
 
 const generated = readFileSync(resolve(circuitDir, "target/evm/Verifier.sol"), "utf8")
   .replace("contract HonkVerifier is IVerifier", "contract GeneratedGoogleVerifier is IVerifier");
@@ -36,4 +40,12 @@ writeFileSync(
   resolve(root, "packages/sdk/src/generated/google_jwt.json"),
   readFileSync(resolve(circuitDir, "target/google_jwt.json")),
 );
-process.stdout.write("Updated Solidity verifier and browser circuit artifact\n");
+copyFileSync(
+  resolve(circuitDir, "target/evm/proof"),
+  resolve(root, "contracts/test/fixtures/google-proof.bin"),
+);
+copyFileSync(
+  resolve(circuitDir, "target/evm/public_inputs"),
+  resolve(root, "contracts/test/fixtures/google-public-inputs.bin"),
+);
+process.stdout.write("Updated verifier, browser circuit artifact, and deterministic proof fixtures\n");

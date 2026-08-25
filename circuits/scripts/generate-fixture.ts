@@ -7,6 +7,7 @@ import {
 } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import { poseidon2Hash } from "@zkpassport/poseidon2";
 
 const circuitDir = resolve(import.meta.dirname, "../google_jwt");
@@ -17,8 +18,8 @@ const privateKey = createPrivateKey(
 const jwk = createPublicKey(privateKey).export({ format: "jwk" }) as JsonWebKey;
 if (!jwk.n || jwk.e !== "AQAB") throw new Error("Fixture must be a 2048-bit RSA key with exponent 65537");
 
-const MAX_HEADER = 128;
-const MAX_PAYLOAD = 1024;
+const MAX_HEADER = 96;
+const MAX_PAYLOAD = 735;
 const MAX_AUDIENCE = 128;
 const MAX_SUBJECT = 64;
 const DOMAIN_IDENTITY = 0x474f4f474c455f343333375f49445f5631n;
@@ -124,13 +125,9 @@ const keyPreimage = Buffer.concat([
 ]);
 
 const entries: Record<string, string> = {
-  device_address: quote(device),
   device_address_bytes: array(toBytes(device, 20)),
-  chain_id: quote(chainId),
   chain_id_bytes: array(toBytes(chainId, 32)),
-  factory_address: quote(factory),
   factory_address_bytes: array(toBytes(factory, 20)),
-  valid_until: quote(validUntil),
   valid_until_bytes: array(toBytes(validUntil, 8)),
   header: array(pad(Buffer.from(headerText), MAX_HEADER)),
   header_len: quote(Buffer.byteLength(headerText)),
@@ -160,11 +157,19 @@ const entries: Record<string, string> = {
     factory,
     validUntil,
     low248Sha(keyPreimage),
-    1,
   ]),
 };
 
 const output = `${Object.entries(entries).map(([key, value]) => `${key} = ${value}`).join("\n")}\n`;
 const outputPath = resolve(circuitDir, "Prover.toml");
 writeFileSync(outputPath, output);
-process.stdout.write(`Wrote deterministic fixture to ${outputPath}\n`);
+process.stdout.write(`Wrote deterministic fixture inputs to ${outputPath}\n`);
+
+if (variant === "valid") {
+  const nargo = process.env.NARGO_BIN ?? "nargo";
+  const wrapper = process.env.ZK_BIN_WRAPPER;
+  const command = wrapper ?? nargo;
+  const args = wrapper ? [nargo, "execute", "fixture"] : ["execute", "fixture"];
+  const result = spawnSync(command, args, { cwd: circuitDir, stdio: "inherit" });
+  if (result.status !== 0) throw new Error("Failed to generate deterministic circuit witness");
+}

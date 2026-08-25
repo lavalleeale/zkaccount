@@ -31,9 +31,9 @@ contract GeneratedVerifierTest {
     }
 
     function _decodePublicInputs(bytes memory encoded) private pure returns (bytes32[] memory values) {
-        require(encoded.length == 8 * 32, "unexpected public input length");
-        values = new bytes32[](8);
-        for (uint256 i = 0; i < 8; ++i) {
+        require(encoded.length == 7 * 32, "unexpected public input length");
+        values = new bytes32[](7);
+        for (uint256 i = 0; i < 7; ++i) {
             bytes32 value;
             assembly ("memory-safe") {
                 value := mload(add(add(encoded, 0x20), mul(i, 0x20)))

@@ -2,7 +2,7 @@
 
 This repository is an incremental implementation of a wallet whose deterministic
 smart-account identity comes from a privately proven Google OIDC subject. The
-real Noir JWT/RS256 proof, generated UltraHonk verifier, single-threaded browser
+real Noir JWT/RS256 proof, generated UltraHonk verifier, threaded browser
 prover, Base Sepolia deployment, and provider-neutral EntryPoint v0.8 bundler
 client are implemented. A live bundler endpoint and the final portability
 transaction run remain environment-dependent.
@@ -83,6 +83,9 @@ availability window is unacceptable.
 Circuit generation is pinned to Nargo `1.0.0-beta.26`, `noir_rsa` `v0.11.0`,
 and bb.js `5.2.0`. `circuit:generate-verifier` accepts `NARGO_BIN`, `BB_BIN`,
 and optional `ZK_BIN_WRAPPER` environment variables for NixOS/CI tool paths.
+The current circuit expands to 262,021 Barretenberg gates, just below the
+2^18 proving-domain boundary. Set `BBJS_THREADS` when running
+`circuit:test-bbjs` to benchmark a particular worker count.
 
 For GIS, copy each app's `.env.example`, configure an OAuth web client for the
 actual origin, and set `VITE_BUNDLER_URL` to a Base Sepolia bundler supporting
@@ -90,7 +93,20 @@ EntryPoint v0.8. Then run `npm run dev:a` or `npm run dev:b`. The browser receiv
 the ID token directly. The demos display only selected development claims and
 never log or send the full token to a project backend.
 
-The initial flow has no paymaster. After proof generation, fund the displayed
+The checked-in Vite development and preview servers send
+`Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp`. Configure the same response
+headers on the production host; otherwise bb.js safely falls back to one proving
+thread. The SDK selects up to eight available hardware threads, runs proving in
+a dedicated worker, and reuses the initialized prover for the page lifetime.
+The GIS button explicitly opts into FedCM so Google authentication does not
+depend on cross-origin popup/opener communication while the page is isolated
+on supported Chrome versions. A browser without FedCM may require a redirect or
+separate authentication context; relaxing COOP to support its legacy popup flow
+also disables threaded proving.
+
+The initial flow has no paymaster. When the post-login device check shows that
+authorization is required, the app generates a proof. Fund the displayed
 counterfactual address with Base Sepolia ETH and authorize it before the
 ten-minute proof expires. The first UserOperation deploys the account and adds
 the proof-bound device; later operations use only a device signature. The
@@ -106,15 +122,13 @@ reduced below standard limits. This is not production bundler compatibility.
 Both demos use discoverable WebAuthn passkeys with required user verification.
 When the provider supports the PRF extension, each app domain-separates its PRF
 output and derives the secp256k1 device key only in memory. When PRF is not
-available, the SDK generates a random device key and stores only its AES-GCM
-ciphertext in localStorage; the non-exportable wrapping key is kept separately
-in IndexedDB. Unlocking through the SDK still performs a passkey assertion first.
+available, the SDK generates a random device key that remains in memory only and
+is never written to localStorage or IndexedDB. Reloading the page loses that key,
+so a new key requires another Google proof before it can be authorized.
 
-The fallback is browser-local: clearing either storage, or using a synced passkey
-on another browser, cannot recover that device key. It protects against disclosure
-of localStorage alone, but it does not protect against malicious same-origin code,
-which can use IndexedDB and Web Crypto after compromising the app. Use HTTPS or
-localhost, and treat CSP and dependency integrity as part of key security.
+After Google login, the demos derive the deterministic account address locally
+and check whether the current device key is already authorized. They initialize
+the prover and generate a proof only when device authorization is required.
 
 ## Exact protocol encodings
 
@@ -157,7 +171,6 @@ Google proof public inputs have this fixed order:
 4 factoryAddress (left-zero-padded)
 5 validUntil
 6 googleKeyHash
-7 actionType (REGISTER_DEVICE = 1)
 ```
 
 `audienceHash` is low-248 SHA-256 of the normalized UTF-8 `aud`, encoded as
@@ -175,8 +188,8 @@ same encoding is implemented in TypeScript and the JWK import script.
 - The same hidden Google identity deterministically maps to the same account.
 
 The circuit currently accepts only compact JSON claim encodings, a single string
-`aud`, RS256, 2048-bit RSA moduli, exponent 65537, headers up to 128 bytes,
-payloads up to 1024 bytes, audiences up to 128 bytes, and subjects up to 64
+`aud`, RS256, 2048-bit RSA moduli, exponent 65537, headers up to 96 bytes,
+payloads up to 735 bytes, audiences up to 128 bytes, and subjects up to 64
 bytes. The browser rejects tokens outside those explicit MVP bounds.
 
 ### What remains trusted
