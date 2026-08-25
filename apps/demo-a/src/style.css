@@ -110,3 +110,9 @@ section {
 small {
   color: #6b7280;
 }
+.legal-links {
+  margin-top: 18px;
+}
+.legal-links a {
+  color: #536b9e;
+}

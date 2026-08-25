@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Privacy Policy · zkAccount Demo A</title>
+    <style>
+      :root {
+        font-family: Inter, system-ui, sans-serif;
+        color: #17223b;
+        background: #f3f6fb;
+      }
+      body {
+        margin: 0;
+      }
+      main {
+        box-sizing: border-box;
+        width: min(760px, calc(100% - 32px));
+        margin: 32px auto;
+        padding: 40px;
+        border-radius: 20px;
+        background: white;
+        box-shadow: 0 20px 60px #24345b1c;
+      }
+      h1 {
+        margin-bottom: 8px;
+      }
+      h2 {
+        margin-top: 28px;
+        font-size: 20px;
+      }
+      p,
+      li {
+        line-height: 1.6;
+      }
+      a {
+        color: #536b9e;
+      }
+      .effective-date {
+        color: #6b7280;
+      }
+      @media (max-width: 600px) {
+        main {
+          margin: 16px auto;
+          padding: 24px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <a href="/">← Back to Demo A</a>
+      <h1>Privacy policy</h1>
+      <p class="effective-date">Effective August 25, 2026</p>
+      <p>
+        zkAccount Demo A is an experimental, open-source application for creating and using a smart
+        account on the Base Sepolia test network. This policy explains how the demo handles
+        information when you use Google authentication, a passkey, or the blockchain features.
+      </p>
+
+      <h2>Information the demo accesses</h2>
+      <ul>
+        <li>
+          <strong>Google authentication data.</strong> When you continue with Google, Google sends
+          an ID token to your browser. The demo uses its issuer, audience, stable Google subject
+          identifier, nonce, issued-at time, and expiration time to validate the login and create a
+          zero-knowledge authorization proof. The token may contain other basic account claims
+          supplied by Google, but the demo does not use them to create a profile.
+        </li>
+        <li>
+          <strong>Passkey data.</strong> Your browser and authenticator create or retrieve a
+          passkey. When supported, the demo uses the passkey PRF extension to derive an
+          origin-specific device signing key in browser memory. If PRF is unavailable, it creates a
+          temporary signing key that lasts only for the page session.
+        </li>
+        <li>
+          <strong>Blockchain data.</strong> The demo reads account addresses, balances, authorized
+          device addresses, approved Google client-ID hashes, and transaction status from Base
+          Sepolia. If you submit an operation, its smart-account address, device public address,
+          proof and public inputs, and transaction data are sent to the configured RPC and bundler
+          services and may be recorded publicly onchain.
+        </li>
+      </ul>
+
+      <h2>How information is used and stored</h2>
+      <p>
+        Google token processing and proof generation happen locally in your browser. The demo does
+        not intentionally send the full Google ID token or the Google subject identifier to an
+        application backend, and it does not operate an account database. Authentication results,
+        proof data, and temporary device keys are held in page memory and disappear when the page is
+        reloaded or closed. Demo A may display selected token claims in the page during that session
+        for development transparency.
+      </p>
+      <p>
+        A passkey remains under the control of your browser, operating system, authenticator, and
+        any passkey-sync provider you use. Public blockchain records are permanent and cannot be
+        deleted by this demo. The zero-knowledge proof is designed to authorize the account without
+        revealing the Google ID token or subject identifier onchain, but its public inputs and the
+        resulting account activity remain public.
+      </p>
+
+      <h2>Third parties and sharing</h2>
+      <p>
+        The demo does not sell personal information or use it for advertising. Information is shared
+        only as needed for the features you request: Google provides authentication; browser and
+        authenticator providers manage passkeys; hosting providers deliver the site; configured RPC
+        and ERC-4337 bundler providers process blockchain requests; and the Base Sepolia network
+        publishes submitted transactions. Those parties process information under their own terms
+        and privacy policies.
+      </p>
+      <p>
+        The demo does not intentionally use analytics, advertising trackers, or application cookies.
+      </p>
+
+      <h2>Your choices</h2>
+      <p>
+        You may use the site without continuing with Google, stop before submitting an onchain
+        operation, close or reload the page to clear session memory, manage Google connections in
+        your Google Account, and manage passkeys through your browser or operating system. Onchain
+        records already submitted cannot be erased.
+      </p>
+
+      <h2>Security and test-network notice</h2>
+      <p>
+        The demo minimizes disclosure by processing credentials locally and using a zero-knowledge
+        proof, but no system can guarantee absolute security. Base Sepolia is a public test network.
+        Do not use the demo with real funds or information you are unwilling to expose through
+        public blockchain activity.
+      </p>
+
+      <h2>Children</h2>
+      <p>
+        The demo is not directed to children under 13, and it does not knowingly collect their data.
+      </p>
+
+      <h2>Changes and contact</h2>
+      <p>
+        This policy may change as the demo evolves. Material updates will be reflected here with a
+        new effective date. For privacy questions or requests, open an issue in the
+        <a href="https://github.com/lavalleeale/zkaccount/issues">zkAccount GitHub repository</a>.
+      </p>
+    </main>
+  </body>
+</html>

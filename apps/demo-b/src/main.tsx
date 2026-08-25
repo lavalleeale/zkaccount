@@ -258,6 +258,9 @@ function App() {
         PRF-capable passkeys deterministically derive the device key in memory. If PRF is
         unavailable, a random device key exists only for this page session and is never stored.
       </small>
+      <footer className="legal-links">
+        <a href="/privacy.html">Privacy policy</a>
+      </footer>
     </main>
   );
 }
