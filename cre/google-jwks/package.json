@@ -1,0 +1,16 @@
+{
+  "name": "@zkaccount/google-jwks-cre",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@chainlink/cre-sdk": "1.19.1",
+    "viem": "^2.54.2",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  }
+}

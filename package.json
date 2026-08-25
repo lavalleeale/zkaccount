@@ -1,0 +1,31 @@
+{
+  "name": "zk-google-4337",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "fetch:google-jwks": "tsx scripts/fetch-google-jwks.ts",
+    "typecheck:cre": "npm run typecheck --prefix cre/google-jwks",
+    "circuit:fixture": "tsx circuits/scripts/generate-fixture.ts",
+    "circuit:test-negative": "tsx circuits/scripts/test-negative.ts",
+    "circuit:test-bbjs": "tsx circuits/scripts/test-bbjs.ts",
+    "circuit:generate-verifier": "tsx circuits/scripts/generate-verifier.ts",
+    "sdk:test-account": "tsx packages/sdk/tests/account.test.ts",
+    "sdk:test-userop": "tsx packages/sdk/tests/userop.test.ts",
+    "dev:a": "npm run dev -w @zkaccount/demo-a",
+    "dev:b": "npm run dev -w @zkaccount/demo-b"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "viem": "^2.37.3"
+  },
+  "dependencies": {
+    "@zkpassport/poseidon2": "^0.6.2"
+  }
+}

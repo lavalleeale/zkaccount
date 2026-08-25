@@ -1,0 +1,24 @@
+{
+  "chainId": 84532,
+  "deployedAt": "2026-08-24",
+  "deployer": "0xae6d1975a3a3D73693580A91B688832448881CC3",
+  "entryPoint": "0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108",
+  "rootAudience": "0x003058e40c036af1aab38e49c89e0ee26d4d7be8fd6a665f8b37bde5507223d9",
+  "creForwarder": "0x82300bd7c3958625581cc2F77bC6464dcEcDF3e5",
+  "creWorkflowOwner": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "googleVerifier": "0x534837ce36F46b664A0155D00E79C58B8868F3B0",
+  "googleKeyRegistry": {
+    "address": "0xdB3584f3E0b70B13531ba94cbAD567b400B3D64f",
+    "transactionHash": "0xdfab6e61895cad4d3fd88eb0428220e983d3bef7976d888985ba4f86581b6726"
+  },
+  "googleAccountFactory": {
+    "address": "0xF0416e1a91654214DB5eCe08a9c59258299bdC24",
+    "transactionHash": "0x73aae4a1b6eb1c37c5d0b3694cccc79f72b95407ed35edbcee32f87ee48f4d0c"
+  },
+  "googleJwtValidator": {
+    "address": "0x8e9d5c4BD0b4515c422D291274569a685C98e5F0",
+    "transactionHash": "0xbaa2900056154ac3006659a1b819c84898e2a268601bf5423efb8efdff992f8d"
+  },
+  "factoryInitializationTransactionHash": "0x948e6abc77b653a82709cdc807c36f6dda0300e68f107270078069c9b34029fe",
+  "creSimulationUpdateTransactionHash": "0xb2cc192757358c6229ee0f83e509745f64dd65c05f9b26073624774ab2325acf"
+}

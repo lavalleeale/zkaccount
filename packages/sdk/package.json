@@ -1,0 +1,21 @@
+{
+  "name": "@zkaccount/sdk",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@aztec/bb.js": "^5.2.0",
+    "@noir-lang/noir_js": "^1.0.0-beta.26",
+    "@zkpassport/poseidon2": "^0.6.2",
+    "viem": "^2.37.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  }
+}

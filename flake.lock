@@ -1,0 +1,48 @@
+{
+  "nodes": {
+    "cre-cli": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1787642355,
+        "narHash": "sha256-MDdTYv2UVd+GgBYRbbgsG75LIDqPHLXtNzqduSlCulk=",
+        "owner": "lavalleeale-forks",
+        "repo": "cre-cli",
+        "rev": "a6e6c5f7e38eab263784da9e8334a45b9e8efe33",
+        "type": "github"
+      },
+      "original": {
+        "owner": "lavalleeale-forks",
+        "repo": "cre-cli",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1787498568,
+        "narHash": "sha256-9i/VTdusq/+NM/tz+J1Re+ojkMB8MBf0QshnYfzHz30=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "56c02bc00adcf003215cc4bd996d6efaf4cff188",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "cre-cli": "cre-cli",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

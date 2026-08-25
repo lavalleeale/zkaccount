@@ -1,0 +1,8 @@
+{
+  "schedule": "0 0 */6 * * *",
+  "googleJwksUrl": "https://www.googleapis.com/oauth2/v3/certs",
+  "evm": {
+    "chainSelectorName": "ethereum-testnet-sepolia-base-1",
+    "registryAddress": "0xdB3584f3E0b70B13531ba94cbAD567b400B3D64f"
+  }
+}
