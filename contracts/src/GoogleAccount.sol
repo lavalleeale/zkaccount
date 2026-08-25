@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {IEntryPoint, PackedUserOperation} from "./interfaces/IEntryPoint.sol";
+import {GoogleAudience} from "./GoogleAudience.sol";
 import {GoogleJWTValidator} from "./GoogleJWTValidator.sol";
 
 contract GoogleAccount {
@@ -17,6 +18,7 @@ contract GoogleAccount {
     error InvalidGoogleCallData();
     error InvalidSignatureEncoding();
     error ZeroAddress();
+    error GoogleNonceNotIncreasing(uint64 provided, uint64 current);
 
     bytes32 public immutable identity;
     IEntryPoint public immutable entryPoint;
@@ -25,9 +27,10 @@ contract GoogleAccount {
 
     mapping(address device => bool enabled) public deviceKeys;
     mapping(bytes32 audience => bool enabled) public allowedAudiences;
+    uint64 public googleNonce;
 
     event DeviceSet(address indexed device, bool enabled);
-    event AudienceSet(bytes32 indexed audience, bool enabled);
+    event AudienceSet(bytes32 indexed audience, string clientId, bool enabled);
     event Executed(address indexed target, uint256 value, bytes data);
 
     constructor(
@@ -35,7 +38,7 @@ contract GoogleAccount {
         IEntryPoint entryPoint_,
         GoogleJWTValidator googleValidator_,
         address factory_,
-        bytes32 rootAudience
+        string memory rootClientId
     ) {
         if (address(entryPoint_) == address(0) || address(googleValidator_) == address(0) || factory_ == address(0)) {
             revert ZeroAddress();
@@ -44,8 +47,9 @@ contract GoogleAccount {
         entryPoint = entryPoint_;
         googleValidator = googleValidator_;
         factory = factory_;
+        bytes32 rootAudience = GoogleAudience.hash(rootClientId);
         allowedAudiences[rootAudience] = true;
-        emit AudienceSet(rootAudience, true);
+        emit AudienceSet(rootAudience, rootClientId, true);
     }
 
     receive() external payable {}
@@ -66,14 +70,16 @@ contract GoogleAccount {
         emit Executed(target, value, data);
     }
 
-    function addAudience(bytes32 audience) external onlySelf {
+    function addAudience(string calldata clientId) external onlySelf {
+        bytes32 audience = GoogleAudience.hash(clientId);
         allowedAudiences[audience] = true;
-        emit AudienceSet(audience, true);
+        emit AudienceSet(audience, clientId, true);
     }
 
-    function removeAudience(bytes32 audience) external onlySelf {
+    function removeAudience(string calldata clientId) external onlySelf {
+        bytes32 audience = GoogleAudience.hash(clientId);
         allowedAudiences[audience] = false;
-        emit AudienceSet(audience, false);
+        emit AudienceSet(audience, clientId, false);
     }
 
     function addDevice(address device) external onlySelf {
@@ -127,15 +133,22 @@ contract GoogleAccount {
         return signer != address(0) && deviceKeys[signer] ? 0 : SIG_VALIDATION_FAILED;
     }
 
-    function _validateGoogle(bytes calldata callData, bytes calldata encodedAuthorization) internal view returns (uint256) {
+    function _validateGoogle(bytes calldata callData, bytes calldata encodedAuthorization) internal returns (uint256) {
         (bytes memory proof, bytes32[] memory publicInputs) = abi.decode(encodedAuthorization, (bytes, bytes32[]));
         GoogleJWTValidator.GoogleAuthorization memory auth =
             googleValidator.verifyGoogleAuthorization(address(this), proof, publicInputs);
         if (!_isAddDeviceCall(callData, auth.deviceKey)) revert InvalidGoogleCallData();
-        // The proof is intentionally not persisted. Once its bound device has
-        // been installed, reject later UserOperations that reuse the same
-        // public proof with a fresh EntryPoint nonce.
+        // An already-installed device needs no second bootstrap. The monotonic
+        // Google nonce below permanently rejects the proof even after removal.
         if (deviceKeys[auth.deviceKey]) return SIG_VALIDATION_FAILED;
+        uint64 currentNonce = googleNonce;
+        if (auth.googleNonce <= currentNonce) {
+            revert GoogleNonceNotIncreasing(auth.googleNonce, currentNonce);
+        }
+        // Consume the Google-issued timestamp during validation. Simulations roll
+        // this write back, while the real EntryPoint call makes concurrent proofs
+        // with the same or an older iat fail before execution.
+        googleNonce = auth.googleNonce;
         return _packValidationData(auth.validUntil);
     }
 

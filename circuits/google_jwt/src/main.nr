@@ -32,13 +32,15 @@ fn main(
     audience_offset: u32,
     subject_offset: u32,
     nonce_offset: u32,
+    iat_offset: u32,
+    iat_len: u32,
     exp_offset: u32,
     exp_len: u32,
     modulus_bytes: [u8; 256],
     modulus_limbs: [u128; 18],
     redc_limbs: [u128; 18],
     signature_limbs: [u128; 18],
-) -> pub [Field; 7] {
+) -> pub [Field; 8] {
     assert(header_len <= MAX_HEADER);
     assert(payload_len <= MAX_PAYLOAD);
     assert((audience_len > 0) & (audience_len <= MAX_AUDIENCE));
@@ -67,7 +69,21 @@ fn main(
         login_randomness,
     );
     assert_nonce_claim(payload, payload_len, nonce_offset, nonce_digest);
-    let jwt_exp = assert_exp_claim(payload, payload_len, exp_offset, exp_len);
+    let jwt_iat = assert_numeric_claim(
+        payload,
+        payload_len,
+        iat_offset,
+        iat_len,
+        [34, 105, 97, 116, 34, 58],
+    );
+    let jwt_exp = assert_numeric_claim(
+        payload,
+        payload_len,
+        exp_offset,
+        exp_len,
+        [34, 101, 120, 112, 34, 58],
+    );
+    assert(jwt_iat <= jwt_exp);
     assert(jwt_exp >= valid_until as u64);
 
     let computed_audience_hash = low_248_sha256(audience, audience_len);
@@ -103,6 +119,7 @@ fn main(
         factory_address,
         valid_until,
         computed_google_key_hash,
+        jwt_iat as Field,
     ]
 }
 
@@ -133,8 +150,13 @@ fn assert_json_string<let N: u32, let P: u32, let V: u32>(
     assert(payload[offset + P + value_len] == 34);
 }
 
-fn assert_exp_claim(payload: [u8; MAX_PAYLOAD], payload_len: u32, offset: u32, digit_len: u32) -> u64 {
-    let prefix: [u8; 6] = [34, 101, 120, 112, 34, 58];
+fn assert_numeric_claim(
+    payload: [u8; MAX_PAYLOAD],
+    payload_len: u32,
+    offset: u32,
+    digit_len: u32,
+    prefix: [u8; 6],
+) -> u64 {
     assert((digit_len > 0) & (digit_len <= 10));
     assert(offset + 6 + digit_len <= payload_len);
     for i in 0..6 {

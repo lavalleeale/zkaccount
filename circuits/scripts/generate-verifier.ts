@@ -21,20 +21,36 @@ for (const artifact of ["target/evm/vk", "target/evm/Verifier.sol"]) {
   const path = resolve(circuitDir, artifact);
   if (existsSync(path)) rmSync(path, { recursive: true });
 }
+run(bb, ["write_vk", "-b", "target/google_jwt.json", "-o", "target/evm", "-t", "evm"]);
 run(bb, [
-  "write_vk", "-b", "target/google_jwt.json", "-o", "target/evm", "-t", "evm",
+  "write_solidity_verifier",
+  "-k",
+  "target/evm/vk",
+  "-o",
+  "target/evm/Verifier.sol",
+  "-t",
+  "evm",
+  "--optimized",
 ]);
 run(bb, [
-  "write_solidity_verifier", "-k", "target/evm/vk", "-o", "target/evm/Verifier.sol",
-  "-t", "evm", "--optimized",
-]);
-run(bb, [
-  "prove", "-b", "target/google_jwt.json", "-w", "target/fixture.gz",
-  "-k", "target/evm/vk", "-o", "target/evm", "-t", "evm", "--verify",
+  "prove",
+  "-b",
+  "target/google_jwt.json",
+  "-w",
+  "target/fixture.gz",
+  "-k",
+  "target/evm/vk",
+  "-o",
+  "target/evm",
+  "-t",
+  "evm",
+  "--verify",
 ]);
 
-const generated = readFileSync(resolve(circuitDir, "target/evm/Verifier.sol"), "utf8")
-  .replace("contract HonkVerifier is IVerifier", "contract GeneratedGoogleVerifier is IVerifier");
+const generated = readFileSync(resolve(circuitDir, "target/evm/Verifier.sol"), "utf8").replace(
+  "contract HonkVerifier is IVerifier",
+  "contract GeneratedGoogleVerifier is IVerifier",
+);
 writeFileSync(resolve(root, "contracts/src/GeneratedGoogleVerifier.sol"), generated);
 writeFileSync(
   resolve(root, "packages/sdk/src/generated/google_jwt.json"),
@@ -48,4 +64,6 @@ copyFileSync(
   resolve(circuitDir, "target/evm/public_inputs"),
   resolve(root, "contracts/test/fixtures/google-public-inputs.bin"),
 );
-process.stdout.write("Updated verifier, browser circuit artifact, and deterministic proof fixtures\n");
+process.stdout.write(
+  "Updated verifier, browser circuit artifact, and deterministic proof fixtures\n",
+);

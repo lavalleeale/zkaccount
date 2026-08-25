@@ -1,0 +1,10 @@
+**/dist
+**/.cre_build_tmp.*
+**/node_modules
+cache
+circuits/**/target
+contracts/lib
+contracts/src/GeneratedGoogleVerifier.sol
+out
+packages/sdk/src/generated
+package-lock.json

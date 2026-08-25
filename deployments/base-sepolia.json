@@ -1,24 +1,34 @@
 {
   "chainId": 84532,
-  "deployedAt": "2026-08-24",
+  "deployedAt": "2026-08-25",
+  "protocolVersion": "pre-google-nonce",
+  "compatibleWithCurrentArtifacts": false,
+  "requiresRedeploymentReason": "Current artifacts require the eight-input iat-backed Google nonce protocol.",
   "deployer": "0xae6d1975a3a3D73693580A91B688832448881CC3",
   "entryPoint": "0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108",
   "rootAudience": "0x003058e40c036af1aab38e49c89e0ee26d4d7be8fd6a665f8b37bde5507223d9",
+  "rootClientId": "176685232849-e7govufghrlnprcc7cuijp5eusopci5b.apps.googleusercontent.com",
   "creForwarder": "0x82300bd7c3958625581cc2F77bC6464dcEcDF3e5",
   "creWorkflowOwner": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "googleVerifier": "0x534837ce36F46b664A0155D00E79C58B8868F3B0",
+  "googleVerifier": "0x28D6a6FECd61864Ee00C9C44Ac607A31b13Ed52f",
+  "googleVerifierTransactionHash": "0x3c6e4fdcb7ace85aaea0595754b02d0b6072d656692c336e7b1056e009abf500",
   "googleKeyRegistry": {
-    "address": "0xdB3584f3E0b70B13531ba94cbAD567b400B3D64f",
-    "transactionHash": "0xdfab6e61895cad4d3fd88eb0428220e983d3bef7976d888985ba4f86581b6726"
+    "address": "0xb17650A640EdA09E9A36AF3bb6ac1e28Da5A3D34",
+    "transactionHash": "0xd342f64e49246db04da2b01f771ffcc03c534da8787980f206c36f3b12d95ac0"
   },
   "googleAccountFactory": {
-    "address": "0xF0416e1a91654214DB5eCe08a9c59258299bdC24",
-    "transactionHash": "0x73aae4a1b6eb1c37c5d0b3694cccc79f72b95407ed35edbcee32f87ee48f4d0c"
+    "address": "0x5C567AbFc1805094943A7F153381EB38845580B6",
+    "transactionHash": "0xdf8aed8c94322ef298b6b2c09ba6ce3adc516f635506b2e87f14b75b1fee8677",
+    "blockNumber": 45961770
   },
   "googleJwtValidator": {
-    "address": "0x8e9d5c4BD0b4515c422D291274569a685C98e5F0",
-    "transactionHash": "0xbaa2900056154ac3006659a1b819c84898e2a268601bf5423efb8efdff992f8d"
+    "address": "0x6665ee4A35417306C0D37F80B694DdDEc53E1723",
+    "transactionHash": "0xdf0c27a8f52302466b8f7386525c1ed868a2202f89dab79985355362d4fd1c95",
+    "blockNumber": 45961775
   },
-  "factoryInitializationTransactionHash": "0x948e6abc77b653a82709cdc807c36f6dda0300e68f107270078069c9b34029fe",
-  "creSimulationUpdateTransactionHash": "0xb2cc192757358c6229ee0f83e509745f64dd65c05f9b26073624774ab2325acf"
+  "factoryInitializationTransactionHash": "0x62fea13c2cdee63f96210969424d73a3b2301f60daabddcd5c1f27c861bf8a1c",
+  "factoryInitializationBlockNumber": 45961778,
+  "creLastSimulatedAt": "2026-08-25T14:05:02Z",
+  "creLastSimulatedKeyCount": 4,
+  "creSimulationUpdateTransactionHash": "0x7d0643523022b2b090347da4e50de78e939f931f751b03b020d254538b92a64a"
 }

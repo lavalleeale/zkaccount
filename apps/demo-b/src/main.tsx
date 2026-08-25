@@ -23,7 +23,11 @@ const passkeyOptions = { scope: "demo-b", displayName: "zkAccount Demo B" };
 
 function App() {
   const button = useRef<HTMLDivElement>(null);
-  const wallet = useMemo(() => factory ? new Google4337Client({ factory, bundlerUrl: bundlerUrl ?? "", rpcUrl }) : undefined, []);
+  const wallet = useMemo(
+    () =>
+      factory ? new Google4337Client({ factory, bundlerUrl: bundlerUrl ?? "", rpcUrl }) : undefined,
+    [],
+  );
   const [status, setStatus] = useState("No wallet state shared with Demo A");
   const [login, setLogin] = useState<GoogleLoginResult>();
   const [proof, setProof] = useState<GoogleProof>();
@@ -43,10 +47,14 @@ function App() {
       setDevice(nextDevice);
       setLogin(undefined);
       setProof(undefined);
+      setAccount(undefined);
+      setBalance(0n);
       setAuthorized(false);
-      setStatus(nextDevice.protection === "passkey-prf"
-        ? "Passkey ready. Continue with Google to recover the smart account."
-        : "Passkey ready with a memory-only device key. Continue with Google.");
+      setStatus(
+        nextDevice.protection === "passkey-prf"
+          ? "Passkey ready. Continue with Google to recover the smart account."
+          : "Passkey ready with a memory-only device key. Continue with Google.",
+      );
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
@@ -62,20 +70,36 @@ function App() {
     ]);
     setBalance(nextBalance);
     setAuthorized(nextAuthorized);
-    setStatus(nextAuthorized ? "Demo B device is authorized on the shared account" : "Demo B device needs Google authorization");
+    setStatus(
+      nextAuthorized
+        ? "Demo B device is authorized on the shared account"
+        : "Demo B device needs Google authorization",
+    );
   }
 
   async function start() {
     if (!button.current || !clientId || !factory || !wallet || !device) {
-      setStatus(device ? "Set VITE_GOOGLE_CLIENT_ID and VITE_ACCOUNT_FACTORY first" : "Create or unlock the Demo B passkey first");
+      setStatus(
+        device
+          ? "Set VITE_GOOGLE_CLIENT_ID and VITE_ACCOUNT_FACTORY first"
+          : "Create or unlock the Demo B passkey first",
+      );
       return;
     }
     setBusy(true);
+    setAccount(undefined);
+    setBalance(0n);
     setProof(undefined);
     setAuthorized(false);
     setStatus("Authenticating with Google");
     try {
-      const result = await loginWithGoogle({ clientId, factory, chainId: 84532, button: button.current, device });
+      const result = await loginWithGoogle({
+        clientId,
+        factory,
+        chainId: 84532,
+        button: button.current,
+        device,
+      });
       setLogin(result);
       setDevice(result.device);
       setStatus("Checking whether the Demo B device is already authorized");
@@ -97,9 +121,11 @@ function App() {
       setStatus("Generating proof in this independent origin");
       const generatedProof = await proveGoogleAuthorization(result);
       setProof(generatedProof);
-      setStatus(bundlerUrl
-        ? `Same identity resolved. Authorize Demo B's independent key on ${predicted}.`
-        : `Account resolved. Configure VITE_BUNDLER_URL to submit the UserOperation.`);
+      setStatus(
+        bundlerUrl
+          ? `Same identity resolved. Authorize Demo B's independent key on ${predicted}.`
+          : `Account resolved. Configure VITE_BUNDLER_URL to submit the UserOperation.`,
+      );
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
@@ -150,43 +176,90 @@ function App() {
     }
   }
 
-  return <main>
-    <p className="eyebrow">Independent origin · Demo B</p>
-    <h1>Recover the same account</h1>
-    <p>This app uses an independent passkey device key for this origin.</p>
-    <div className="actions">
-      <button disabled={busy} onClick={() => void loadPasskey(false)}>Unlock passkey</button>
-      <button disabled={busy} className="secondary" onClick={() => void loadPasskey(true)}>Create passkey</button>
-      <button disabled={busy || !device} onClick={start}>Continue with Google</button>
-      {proof && !authorized && <button disabled={busy || !bundlerUrl} onClick={authorizeDevice}>Authorize Demo B device</button>}
-      {account && <button disabled={busy} className="secondary" onClick={() => void refresh()}>Refresh account</button>}
-      {authorized && <button disabled={busy || !bundlerUrl} onClick={sendSelfTransaction}>Send 0 ETH self-transaction</button>}
-      {authorized && <button disabled={busy || !bundlerUrl} className="danger" onClick={revokeLocalDevice}>Revoke Demo B device</button>}
-    </div>
-    <div ref={button} className="google-button" />
-    <section><strong>Status</strong><span>{status}</span></section>
-    <section>
-      <strong>Portable smart account</strong>
-      <span>{account ?? "Authenticate with the same Google account used in Demo A"}</span>
-      <span>Balance: {formatEther(balance)} Base Sepolia ETH</span>
-      <span>Demo B passkey device: {device?.address ?? "Create or unlock a passkey"}</span>
-      {device && <span>Key protection: {device.protection === "passkey-prf" ? "passkey PRF" : "memory only (not recoverable after reload)"}</span>}
-      <span>Authorized: {authorized ? "yes" : "no"}</span>
-    </section>
-    {login && <section>
-      <strong>Local authentication result</strong>
-      <span>Audience: {login.claims.aud}</span>
-      <span>Nonce matched: yes</span>
-    </section>}
-    {proof && <section>
-      <strong>Private proof</strong>
-      <span>Identity commitment: {proof.publicInputs[0]}</span>
-      <span>Proof size: {(proof.proof.length - 2) / 2} bytes</span>
-      <span>Compare the smart-account address—not browser state—with Demo A.</span>
-    </section>}
-    {!bundlerUrl && <small>Set VITE_BUNDLER_URL to a Base Sepolia ERC-4337 bundler supporting EntryPoint v0.8.</small>}
-    <small>PRF-capable passkeys deterministically derive the device key in memory. If PRF is unavailable, a random device key exists only for this page session and is never stored.</small>
-  </main>;
+  return (
+    <main>
+      <p className="eyebrow">Independent origin · Demo B</p>
+      <h1>Recover the same account</h1>
+      <p>This app uses an independent passkey device key for this origin.</p>
+      <div className="actions">
+        <button disabled={busy} onClick={() => void loadPasskey(false)}>
+          Unlock passkey
+        </button>
+        <button disabled={busy} className="secondary" onClick={() => void loadPasskey(true)}>
+          Create passkey
+        </button>
+        <button disabled={busy || !device} onClick={start}>
+          Continue with Google
+        </button>
+        {proof && !authorized && (
+          <button disabled={busy || !bundlerUrl} onClick={authorizeDevice}>
+            Authorize Demo B device
+          </button>
+        )}
+        {account && (
+          <button disabled={busy} className="secondary" onClick={() => void refresh()}>
+            Refresh account
+          </button>
+        )}
+        {authorized && (
+          <button disabled={busy || !bundlerUrl} onClick={sendSelfTransaction}>
+            Send 0 ETH self-transaction
+          </button>
+        )}
+        {authorized && (
+          <button disabled={busy || !bundlerUrl} className="danger" onClick={revokeLocalDevice}>
+            Revoke Demo B device
+          </button>
+        )}
+      </div>
+      <div ref={button} className="google-button" />
+      <section>
+        <strong>Status</strong>
+        <span>{status}</span>
+      </section>
+      {account && (
+        <section>
+          <strong>Portable smart account</strong>
+          <span>{account}</span>
+          <span>Balance: {formatEther(balance)} Base Sepolia ETH</span>
+          <span>Demo B passkey device: {device?.address ?? "Create or unlock a passkey"}</span>
+          {device && (
+            <span>
+              Key protection:{" "}
+              {device.protection === "passkey-prf"
+                ? "passkey PRF"
+                : "memory only (not recoverable after reload)"}
+            </span>
+          )}
+          <span>Authorized: {authorized ? "yes" : "no"}</span>
+        </section>
+      )}
+      {login && (
+        <section>
+          <strong>Local authentication result</strong>
+          <span>Audience: {login.claims.aud}</span>
+          <span>Nonce matched: yes</span>
+        </section>
+      )}
+      {proof && (
+        <section>
+          <strong>Private proof</strong>
+          <span>Identity commitment: {proof.publicInputs[0]}</span>
+          <span>Proof size: {(proof.proof.length - 2) / 2} bytes</span>
+          <span>Compare the smart-account address—not browser state—with Demo A.</span>
+        </section>
+      )}
+      {!bundlerUrl && (
+        <small>
+          Set VITE_BUNDLER_URL to a Base Sepolia ERC-4337 bundler supporting EntryPoint v0.8.
+        </small>
+      )}
+      <small>
+        PRF-capable passkeys deterministically derive the device key in memory. If PRF is
+        unavailable, a random device key exists only for this page session and is never stored.
+      </small>
+    </main>
+  );
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

@@ -3,6 +3,6 @@
   "googleJwksUrl": "https://www.googleapis.com/oauth2/v3/certs",
   "evm": {
     "chainSelectorName": "ethereum-testnet-sepolia-base-1",
-    "registryAddress": "0xdB3584f3E0b70B13531ba94cbAD567b400B3D64f"
+    "registryAddress": "0xb17650A640EdA09E9A36AF3bb6ac1e28Da5A3D34"
   }
 }

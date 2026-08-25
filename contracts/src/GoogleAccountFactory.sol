@@ -4,6 +4,7 @@ pragma solidity ^0.8.28;
 import {IEntryPoint} from "./interfaces/IEntryPoint.sol";
 import {GoogleJWTValidator} from "./GoogleJWTValidator.sol";
 import {GoogleAccount} from "./GoogleAccount.sol";
+import {GoogleAudience} from "./GoogleAudience.sol";
 
 contract GoogleAccountFactory {
     error NotOwner();
@@ -12,15 +13,17 @@ contract GoogleAccountFactory {
 
     IEntryPoint public immutable entryPoint;
     bytes32 public immutable rootAudience;
+    string public rootClientId;
     address public immutable owner;
     GoogleJWTValidator public googleValidator;
 
     event ValidatorSet(address indexed validator);
     event AccountCreated(bytes32 indexed identity, address indexed account);
 
-    constructor(IEntryPoint entryPoint_, bytes32 rootAudience_) {
+    constructor(IEntryPoint entryPoint_, string memory rootClientId_) {
         entryPoint = entryPoint_;
-        rootAudience = rootAudience_;
+        rootClientId = rootClientId_;
+        rootAudience = GoogleAudience.hash(rootClientId_);
         owner = msg.sender;
     }
 
@@ -39,7 +42,7 @@ contract GoogleAccountFactory {
         if (address(validator) == address(0)) revert ValidatorNotSet();
         address predicted = getAddress(identity);
         if (predicted.code.length != 0) return GoogleAccount(payable(predicted));
-        account = new GoogleAccount{salt: identity}(identity, entryPoint, validator, address(this), rootAudience);
+        account = new GoogleAccount{salt: identity}(identity, entryPoint, validator, address(this), rootClientId);
         emit AccountCreated(identity, address(account));
     }
 
@@ -48,7 +51,7 @@ contract GoogleAccountFactory {
         if (address(validator) == address(0)) revert ValidatorNotSet();
         bytes memory bytecode = abi.encodePacked(
             type(GoogleAccount).creationCode,
-            abi.encode(identity, entryPoint, validator, address(this), rootAudience)
+            abi.encode(identity, entryPoint, validator, address(this), rootClientId)
         );
         bytes32 hash = keccak256(abi.encodePacked(bytes1(0xff), address(this), identity, keccak256(bytecode)));
         return address(uint160(uint256(hash)));

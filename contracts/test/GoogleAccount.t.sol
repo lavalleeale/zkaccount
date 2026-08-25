@@ -14,6 +14,7 @@ interface Vm {
     function prank(address sender) external;
     function expectRevert(bytes4 selector) external;
     function expectRevert(bytes calldata revertData) external;
+    function expectEmit(bool checkTopic1, bool checkTopic2, bool checkTopic3, bool checkData, address emitter) external;
     function warp(uint256 timestamp) external;
 }
 
@@ -54,8 +55,10 @@ contract GoogleAccountTest {
 
     uint256 private constant DEVICE_PRIVATE_KEY = 0xA11CE;
     bytes32 private constant IDENTITY = keccak256("google-sub-fixture");
-    bytes32 private constant ROOT_AUDIENCE = keccak256("root.apps.googleusercontent.com");
+    string private constant ROOT_CLIENT_ID = "root.apps.googleusercontent.com";
     bytes32 private constant GOOGLE_KEY = keccak256("fixture-rsa-key");
+
+    event AudienceSet(bytes32 indexed audience, string clientId, bool enabled);
 
     MockEntryPoint private entryPoint;
     MockGoogleVerifier private verifier;
@@ -65,13 +68,15 @@ contract GoogleAccountTest {
     GoogleJWTValidator private validator;
     GoogleAccount private account;
     address private device;
+    bytes32 private rootAudience;
 
     function setUp() public {
         entryPoint = new MockEntryPoint();
         verifier = new MockGoogleVerifier();
         creForwarder = new MockCREForwarder();
         registry = new GoogleKeyRegistry(address(this), address(creForwarder), address(this));
-        factory = new GoogleAccountFactory(entryPoint, ROOT_AUDIENCE);
+        factory = new GoogleAccountFactory(entryPoint, ROOT_CLIENT_ID);
+        rootAudience = bytes32(uint256(sha256(bytes(ROOT_CLIENT_ID))) & type(uint248).max);
         validator = new GoogleJWTValidator(verifier, registry, address(factory));
         factory.setGoogleValidator(validator);
         _updateGoogleKeys(GOOGLE_KEY);
@@ -86,7 +91,7 @@ contract GoogleAccountTest {
     }
 
     function testGoogleBootstrapAddsOnlyProofBoundDevice() public {
-        PackedUserOperation memory op = _googleAddDeviceOp(device, ROOT_AUDIENCE, uint48(block.timestamp + 600));
+        PackedUserOperation memory op = _googleAddDeviceOp(device, rootAudience, uint48(block.timestamp + 600));
         uint256 validationData = entryPoint.validate(account, op, keccak256("bootstrap"));
         _assertTrue(validationData != 1);
 
@@ -110,10 +115,55 @@ contract GoogleAccountTest {
     }
 
     function testGoogleProofCannotBeReusedAfterDeviceInstallation() public {
-        PackedUserOperation memory op = _googleAddDeviceOp(device, ROOT_AUDIENCE, uint48(block.timestamp + 600));
+        PackedUserOperation memory op = _googleAddDeviceOp(device, rootAudience, uint48(block.timestamp + 600));
         _assertTrue(entryPoint.validate(account, op, keccak256("first-bootstrap")) != 1);
         entryPoint.execute(account, address(account), 0, abi.encodeCall(account.addDevice, (device)));
         _assertEq(entryPoint.validate(account, op, keccak256("replayed-bootstrap")), 1);
+    }
+
+    function testGoogleNonceMustStrictlyIncrease() public {
+        PackedUserOperation memory first =
+            _googleAddDeviceOp(device, rootAudience, uint48(block.timestamp + 600), 100);
+        _assertTrue(entryPoint.validate(account, first, keccak256("first")) != 1);
+        _assertEq(account.googleNonce(), 100);
+
+        PackedUserOperation memory equal =
+            _googleAddDeviceOp(vm.addr(0xB0B), rootAudience, uint48(block.timestamp + 600), 100);
+        vm.expectRevert(abi.encodeWithSelector(GoogleAccount.GoogleNonceNotIncreasing.selector, 100, 100));
+        entryPoint.validate(account, equal, keccak256("equal"));
+
+        PackedUserOperation memory lower =
+            _googleAddDeviceOp(vm.addr(0xCAFE), rootAudience, uint48(block.timestamp + 600), 99);
+        vm.expectRevert(abi.encodeWithSelector(GoogleAccount.GoogleNonceNotIncreasing.selector, 99, 100));
+        entryPoint.validate(account, lower, keccak256("lower"));
+
+        PackedUserOperation memory higher =
+            _googleAddDeviceOp(vm.addr(0xD00D), rootAudience, uint48(block.timestamp + 600), 101);
+        _assertTrue(entryPoint.validate(account, higher, keccak256("higher")) != 1);
+        _assertEq(account.googleNonce(), 101);
+    }
+
+    function testGoogleProofCannotBeReusedAfterDeviceRemoval() public {
+        PackedUserOperation memory op =
+            _googleAddDeviceOp(device, rootAudience, uint48(block.timestamp + 600), 100);
+        _assertTrue(entryPoint.validate(account, op, keccak256("bootstrap")) != 1);
+        entryPoint.execute(account, address(account), 0, abi.encodeCall(account.addDevice, (device)));
+        entryPoint.execute(account, address(account), 0, abi.encodeCall(account.removeDevice, (device)));
+        _assertTrue(!account.deviceKeys(device));
+
+        vm.expectRevert(abi.encodeWithSelector(GoogleAccount.GoogleNonceNotIncreasing.selector, 100, 100));
+        entryPoint.validate(account, op, keccak256("replay-after-removal"));
+    }
+
+    function testSimultaneousGoogleLoginsWithSameIatOnlyConsumeOnce() public {
+        PackedUserOperation memory first =
+            _googleAddDeviceOp(device, rootAudience, uint48(block.timestamp + 600), 100);
+        PackedUserOperation memory second =
+            _googleAddDeviceOp(vm.addr(0xB0B), rootAudience, uint48(block.timestamp + 600), 100);
+
+        _assertTrue(entryPoint.validate(account, first, keccak256("first-login")) != 1);
+        vm.expectRevert(abi.encodeWithSelector(GoogleAccount.GoogleNonceNotIncreasing.selector, 100, 100));
+        entryPoint.validate(account, second, keccak256("simultaneous-login"));
     }
 
     function testUnauthorizedAudienceRejected() public {
@@ -124,14 +174,14 @@ contract GoogleAccountTest {
 
     function testExpiredProofRejected() public {
         vm.warp(1_000);
-        PackedUserOperation memory op = _googleAddDeviceOp(device, ROOT_AUDIENCE, 999);
+        PackedUserOperation memory op = _googleAddDeviceOp(device, rootAudience, 999);
         vm.expectRevert(GoogleJWTValidator.AuthorizationExpired.selector);
         entryPoint.validate(account, op, keccak256("bootstrap"));
     }
 
     function testUnrecognizedGoogleKeyRejected() public {
         _updateGoogleKeys(keccak256("replacement-rsa-key"));
-        PackedUserOperation memory op = _googleAddDeviceOp(device, ROOT_AUDIENCE, uint48(block.timestamp + 600));
+        PackedUserOperation memory op = _googleAddDeviceOp(device, rootAudience, uint48(block.timestamp + 600));
         vm.expectRevert(GoogleJWTValidator.InvalidGoogleKey.selector);
         entryPoint.validate(account, op, keccak256("bootstrap"));
     }
@@ -167,12 +217,28 @@ contract GoogleAccountTest {
         vm.expectRevert(GoogleAccount.OnlySelf.selector);
         account.addDevice(device);
         vm.expectRevert(GoogleAccount.OnlySelf.selector);
-        account.addAudience(keccak256("another-audience"));
+        account.addAudience("another-audience");
+    }
+
+    function testAudienceEventsIncludeClientId() public {
+        _bootstrap(device);
+        string memory clientId = "another.apps.googleusercontent.com";
+        bytes32 audience = bytes32(uint256(sha256(bytes(clientId))) & type(uint248).max);
+
+        vm.expectEmit(true, false, false, true, address(account));
+        emit AudienceSet(audience, clientId, true);
+        entryPoint.execute(account, address(account), 0, abi.encodeCall(account.addAudience, (clientId)));
+        _assertTrue(account.allowedAudiences(audience));
+
+        vm.expectEmit(true, false, false, true, address(account));
+        emit AudienceSet(audience, clientId, false);
+        entryPoint.execute(account, address(account), 0, abi.encodeCall(account.removeAudience, (clientId)));
+        _assertTrue(!account.allowedAudiences(audience));
     }
 
     function _bootstrap(address authorizedDevice) private {
         PackedUserOperation memory op = _googleAddDeviceOp(
-            authorizedDevice, ROOT_AUDIENCE, uint48(block.timestamp + 600)
+            authorizedDevice, rootAudience, uint48(block.timestamp + 600)
         );
         entryPoint.validate(account, op, keccak256("bootstrap"));
         entryPoint.execute(account, address(account), 0, abi.encodeCall(account.addDevice, (authorizedDevice)));
@@ -191,7 +257,16 @@ contract GoogleAccountTest {
         bytes32 audience,
         uint48 validUntil
     ) private view returns (PackedUserOperation memory op) {
-        bytes32[] memory inputs = new bytes32[](7);
+        return _googleAddDeviceOp(authorizedDevice, audience, validUntil, uint64(validUntil - 300));
+    }
+
+    function _googleAddDeviceOp(
+        address authorizedDevice,
+        bytes32 audience,
+        uint48 validUntil,
+        uint64 issuedAt
+    ) private view returns (PackedUserOperation memory op) {
+        bytes32[] memory inputs = new bytes32[](8);
         inputs[0] = IDENTITY;
         inputs[1] = audience;
         inputs[2] = bytes32(uint256(uint160(authorizedDevice)));
@@ -199,6 +274,7 @@ contract GoogleAccountTest {
         inputs[4] = bytes32(uint256(uint160(address(factory))));
         inputs[5] = bytes32(uint256(validUntil));
         inputs[6] = GOOGLE_KEY;
+        inputs[7] = bytes32(uint256(issuedAt));
 
         bytes memory inner = abi.encodeCall(account.addDevice, (authorizedDevice));
         op.sender = address(account);

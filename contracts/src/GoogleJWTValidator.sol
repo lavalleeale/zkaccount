@@ -14,7 +14,7 @@ interface IGoogleAccountFactoryView {
 }
 
 contract GoogleJWTValidator {
-    uint256 public constant PUBLIC_INPUT_COUNT = 7;
+    uint256 public constant PUBLIC_INPUT_COUNT = 8;
 
     error InvalidPublicInputCount();
     error InvalidProof();
@@ -26,12 +26,14 @@ contract GoogleJWTValidator {
     error WrongIdentity();
     error AudienceNotAllowed();
     error InvalidDevice();
+    error InvalidGoogleNonce();
 
     struct GoogleAuthorization {
         bytes32 identity;
         bytes32 audience;
         address deviceKey;
         uint48 validUntil;
+        uint64 googleNonce;
     }
 
     IGoogleProofVerifier public immutable verifier;
@@ -40,8 +42,9 @@ contract GoogleJWTValidator {
 
     // Public input order is part of the protocol and must match Noir exactly:
     // identity, audienceHash, device address, chainId, factory address,
-    // validUntil and Google key hash. This verifier is dedicated to the
-    // add-device authorization circuit, so an action discriminator is redundant.
+    // validUntil, Google key hash and the JWT iat-backed Google nonce. This
+    // verifier is dedicated to the add-device authorization circuit, so an
+    // action discriminator is redundant.
     constructor(IGoogleProofVerifier verifier_, GoogleKeyRegistry keyRegistry_, address factory_) {
         verifier = verifier_;
         keyRegistry = keyRegistry_;
@@ -67,6 +70,8 @@ contract GoogleJWTValidator {
         auth.deviceKey = address(uint160(uint256(publicInputs[2])));
         uint256 validUntil = uint256(publicInputs[5]);
         auth.validUntil = uint48(validUntil);
+        uint256 googleNonce = uint256(publicInputs[7]);
+        auth.googleNonce = uint64(googleNonce);
 
         if (uint256(publicInputs[2]) >> 160 != 0 || auth.deviceKey == address(0)) revert InvalidDevice();
         if (uint256(publicInputs[4]) >> 160 != 0 || address(uint160(uint256(publicInputs[4]))) != factory) {
@@ -74,6 +79,7 @@ contract GoogleJWTValidator {
         }
         if (uint256(publicInputs[3]) != block.chainid) revert WrongChain();
         if (validUntil > type(uint48).max || block.timestamp > validUntil) revert AuthorizationExpired();
+        if (googleNonce > type(uint64).max) revert InvalidGoogleNonce();
         if (!keyRegistry.validKeys(publicInputs[6])) revert InvalidGoogleKey();
         if (IGoogleAccountView(account).identity() != auth.identity) revert WrongIdentity();
         if (IGoogleAccountFactoryView(factory).getAddress(auth.identity) != account) revert WrongAccount();

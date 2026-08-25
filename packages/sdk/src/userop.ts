@@ -18,6 +18,7 @@ import type { GoogleProof } from "./prover";
 
 export const BASE_SEPOLIA_CHAIN_ID = 84_532;
 export const ENTRY_POINT_V08 = getAddress("0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108");
+export const BASE_SEPOLIA_FACTORY_DEPLOYMENT_BLOCK = 45_961_770n;
 
 const factoryAbi = parseAbi([
   "function createAccount(bytes32 identity) returns (address account)",
@@ -27,38 +28,45 @@ const accountAbi = parseAbi([
   "function execute(address target, uint256 value, bytes data)",
   "function addDevice(address device)",
   "function removeDevice(address device)",
-  "function addAudience(bytes32 audience)",
-  "function removeAudience(bytes32 audience)",
+  "function addAudience(string clientId)",
+  "function removeAudience(string clientId)",
   "function deviceKeys(address device) view returns (bool)",
   "function allowedAudiences(bytes32 audience) view returns (bool)",
+  "function googleNonce() view returns (uint64)",
+  "event AudienceSet(bytes32 indexed audience, string clientId, bool enabled)",
 ]);
 const entryPointAbi = [
   {
     type: "function",
     name: "getNonce",
     stateMutability: "view",
-    inputs: [{ name: "sender", type: "address" }, { name: "key", type: "uint192" }],
+    inputs: [
+      { name: "sender", type: "address" },
+      { name: "key", type: "uint192" },
+    ],
     outputs: [{ name: "nonce", type: "uint256" }],
   },
   {
     type: "function",
     name: "getUserOpHash",
     stateMutability: "view",
-    inputs: [{
-      name: "userOp",
-      type: "tuple",
-      components: [
-        { name: "sender", type: "address" },
-        { name: "nonce", type: "uint256" },
-        { name: "initCode", type: "bytes" },
-        { name: "callData", type: "bytes" },
-        { name: "accountGasLimits", type: "bytes32" },
-        { name: "preVerificationGas", type: "uint256" },
-        { name: "gasFees", type: "bytes32" },
-        { name: "paymasterAndData", type: "bytes" },
-        { name: "signature", type: "bytes" },
-      ],
-    }],
+    inputs: [
+      {
+        name: "userOp",
+        type: "tuple",
+        components: [
+          { name: "sender", type: "address" },
+          { name: "nonce", type: "uint256" },
+          { name: "initCode", type: "bytes" },
+          { name: "callData", type: "bytes" },
+          { name: "accountGasLimits", type: "bytes32" },
+          { name: "preVerificationGas", type: "uint256" },
+          { name: "gasFees", type: "bytes32" },
+          { name: "paymasterAndData", type: "bytes" },
+          { name: "signature", type: "bytes" },
+        ],
+      },
+    ],
     outputs: [{ name: "", type: "bytes32" }],
   },
 ] as const;
@@ -101,17 +109,26 @@ interface JsonRpcResponse<T> {
 export class JsonRpcBundlerClient {
   private nextId = 1;
 
-  constructor(readonly url: string, readonly pollIntervalMs = 2_000) {}
+  constructor(
+    readonly url: string,
+    readonly pollIntervalMs = 2_000,
+  ) {}
 
   async supportedEntryPoints(): Promise<Address[]> {
     return (await this.request<string[]>("eth_supportedEntryPoints", [])).map(getAddress);
   }
 
-  async estimateUserOperationGas(userOperation: UserOperationV08, entryPoint: Address = ENTRY_POINT_V08): Promise<UserOperationGasEstimate> {
+  async estimateUserOperationGas(
+    userOperation: UserOperationV08,
+    entryPoint: Address = ENTRY_POINT_V08,
+  ): Promise<UserOperationGasEstimate> {
     return this.request("eth_estimateUserOperationGas", [userOperation, entryPoint]);
   }
 
-  async sendUserOperation(userOperation: UserOperationV08, entryPoint: Address = ENTRY_POINT_V08): Promise<Hex> {
+  async sendUserOperation(
+    userOperation: UserOperationV08,
+    entryPoint: Address = ENTRY_POINT_V08,
+  ): Promise<Hex> {
     return this.request("eth_sendUserOperation", [userOperation, entryPoint]);
   }
 
@@ -136,10 +153,12 @@ export class JsonRpcBundlerClient {
       body: JSON.stringify({ jsonrpc: "2.0", id: this.nextId++, method, params }),
     });
     if (!response.ok) throw new Error(`Bundler HTTP ${response.status}: ${await response.text()}`);
-    const body = await response.json() as JsonRpcResponse<T>;
+    const body = (await response.json()) as JsonRpcResponse<T>;
     if (body.error) {
       const detail = body.error.data === undefined ? "" : `: ${safeStringify(body.error.data)}`;
-      throw new Error(`Bundler ${method} failed (${body.error.code}): ${body.error.message}${detail}`);
+      throw new Error(
+        `Bundler ${method} failed (${body.error.code}): ${body.error.message}${detail}`,
+      );
     }
     if (body.result === undefined) throw new Error(`Bundler ${method} returned no result`);
     return body.result;
@@ -151,6 +170,12 @@ export interface Google4337ClientOptions {
   bundlerUrl: string;
   rpcUrl?: string;
   entryPoint?: Address;
+  factoryDeploymentBlock?: bigint;
+}
+
+export interface AuthorizedClientId {
+  audienceHash: Hex;
+  clientId: string;
 }
 
 export interface SubmissionResult {
@@ -162,15 +187,28 @@ export interface SubmissionResult {
 
 export type StatusCallback = (status: string) => void;
 
+export const GOOGLE_LOGIN_RACE_MESSAGE =
+  "Another Google login completed first. Sign in with Google again to generate a fresh authorization.";
+
+export class GoogleLoginRaceError extends Error {
+  constructor() {
+    super(GOOGLE_LOGIN_RACE_MESSAGE);
+    this.name = "GoogleLoginRaceError";
+  }
+}
+
 export class Google4337Client {
   readonly factory: Address;
   readonly entryPoint: Address;
+  readonly factoryDeploymentBlock: bigint;
   readonly bundler: JsonRpcBundlerClient;
   readonly publicClient;
 
   constructor(options: Google4337ClientOptions) {
     this.factory = getAddress(options.factory);
     this.entryPoint = getAddress(options.entryPoint ?? ENTRY_POINT_V08);
+    this.factoryDeploymentBlock =
+      options.factoryDeploymentBlock ?? BASE_SEPOLIA_FACTORY_DEPLOYMENT_BLOCK;
     this.bundler = new JsonRpcBundlerClient(options.bundlerUrl);
     this.publicClient = createPublicClient({
       chain: baseSepolia,
@@ -186,12 +224,14 @@ export class Google4337Client {
   }
 
   async getAccountAddress(identity: Hex): Promise<Address> {
-    return getAddress(await this.publicClient.readContract({
-      address: this.factory,
-      abi: factoryAbi,
-      functionName: "getAddress",
-      args: [identity],
-    }));
+    return getAddress(
+      await this.publicClient.readContract({
+        address: this.factory,
+        abi: factoryAbi,
+        functionName: "getAddress",
+        args: [identity],
+      }),
+    );
   }
 
   async isDeployed(account: Address): Promise<boolean> {
@@ -205,6 +245,15 @@ export class Google4337Client {
       abi: accountAbi,
       functionName: "deviceKeys",
       args: [device],
+    });
+  }
+
+  async getGoogleNonce(account: Address): Promise<bigint> {
+    if (!(await this.isDeployed(account))) return 0n;
+    return this.publicClient.readContract({
+      address: account,
+      abi: accountAbi,
+      functionName: "googleNonce",
     });
   }
 
@@ -222,34 +271,77 @@ export class Google4337Client {
     });
   }
 
-  async authorizeDevice(proof: GoogleProof, device: DeviceKey, onStatus: StatusCallback = () => undefined): Promise<SubmissionResult> {
-    validateProofContext(proof, device.address, this.factory);
+  async listAuthorizedClientIds(account: Address): Promise<AuthorizedClientId[]> {
+    if (!(await this.isDeployed(account))) return [];
+    const logs = await this.publicClient.getContractEvents({
+      address: account,
+      abi: accountAbi,
+      eventName: "AudienceSet",
+      fromBlock: this.factoryDeploymentBlock,
+      toBlock: "latest",
+      strict: true,
+    });
+    const events: AudienceSetRecord[] = [];
+    for (const log of logs) {
+      const { audience, clientId, enabled } = log.args;
+      if ((await hashGoogleAudience(clientId)).toLowerCase() !== audience.toLowerCase()) continue;
+      events.push({ audienceHash: audience, clientId, enabled });
+    }
+    return reduceAuthorizedClientIds(events);
+  }
+
+  async authorizeDevice(
+    proof: GoogleProof,
+    device: DeviceKey,
+    onStatus: StatusCallback = () => undefined,
+  ): Promise<SubmissionResult> {
+    const proofGoogleNonce = validateProofContext(proof, device.address, this.factory);
     const accountAddress = await this.getAccountAddress(proof.publicInputs[0]);
     onStatus(`Smart account predicted: ${accountAddress}`);
     if (await this.isDeviceAuthorized(accountAddress, device.address)) {
       return { accountAddress, alreadyAuthorized: true };
     }
-    if (await this.getBalance(accountAddress) === 0n) {
-      throw new Error(`Fund counterfactual account ${accountAddress} with Base Sepolia ETH, then retry authorization`);
+    if ((await this.getGoogleNonce(accountAddress)) >= proofGoogleNonce) {
+      throw new GoogleLoginRaceError();
     }
-    onStatus("Checking bundler compatibility");
-    await this.assertBundlerCompatibility();
-    onStatus("Creating bootstrap UserOperation");
-    let operation = await this.baseOperation(accountAddress, googleSignature(proof));
-    if (!(await this.isDeployed(accountAddress))) {
-      operation.factory = this.factory;
-      operation.factoryData = encodeFunctionData({ abi: factoryAbi, functionName: "createAccount", args: [proof.publicInputs[0]] });
+    if ((await this.getBalance(accountAddress)) === 0n) {
+      throw new Error(
+        `Fund counterfactual account ${accountAddress} with Base Sepolia ETH, then retry authorization`,
+      );
     }
-    operation.callData = addDeviceCall(accountAddress, device.address);
-    onStatus("Estimating UserOperation gas");
-    operation = await this.withGasEstimate(operation);
-    onStatus("Submitting UserOperation to bundler");
-    const userOpHash = await this.bundler.sendUserOperation(operation, this.entryPoint);
-    onStatus(`UserOperation submitted: ${userOpHash}`);
-    const receipt = await this.bundler.waitForUserOperationReceipt(userOpHash);
-    if (!receipt.success) throw new Error(`Bootstrap UserOperation reverted: ${receipt.receipt.transactionHash}`);
-    onStatus(`Confirmed: ${receipt.receipt.transactionHash}`);
-    return { accountAddress, userOpHash, receipt };
+    try {
+      onStatus("Checking bundler compatibility");
+      await this.assertBundlerCompatibility();
+      onStatus("Creating bootstrap UserOperation");
+      let operation = await this.baseOperation(accountAddress, googleSignature(proof));
+      if (!(await this.isDeployed(accountAddress))) {
+        operation.factory = this.factory;
+        operation.factoryData = encodeFunctionData({
+          abi: factoryAbi,
+          functionName: "createAccount",
+          args: [proof.publicInputs[0]],
+        });
+      }
+      operation.callData = addDeviceCall(accountAddress, device.address);
+      onStatus("Estimating UserOperation gas");
+      operation = await this.withGasEstimate(operation);
+      onStatus("Submitting UserOperation to bundler");
+      const userOpHash = await this.bundler.sendUserOperation(operation, this.entryPoint);
+      onStatus(`UserOperation submitted: ${userOpHash}`);
+      const receipt = await this.bundler.waitForUserOperationReceipt(userOpHash);
+      if (!receipt.success)
+        throw new Error(`Bootstrap UserOperation reverted: ${receipt.receipt.transactionHash}`);
+      onStatus(`Confirmed: ${receipt.receipt.transactionHash}`);
+      return { accountAddress, userOpHash, receipt };
+    } catch (error) {
+      if (await this.isDeviceAuthorized(accountAddress, device.address)) {
+        return { accountAddress, alreadyAuthorized: true };
+      }
+      if ((await this.getGoogleNonce(accountAddress)) >= proofGoogleNonce) {
+        throw new GoogleLoginRaceError();
+      }
+      throw error;
+    }
   }
 
   async sendTransaction(
@@ -275,32 +367,49 @@ export class Google4337Client {
     onStatus("Submitting device-signed UserOperation");
     const userOpHash = await this.bundler.sendUserOperation(operation, this.entryPoint);
     const receipt = await this.bundler.waitForUserOperationReceipt(userOpHash);
-    if (!receipt.success) throw new Error(`UserOperation reverted: ${receipt.receipt.transactionHash}`);
+    if (!receipt.success)
+      throw new Error(`UserOperation reverted: ${receipt.receipt.transactionHash}`);
     onStatus(`Confirmed: ${receipt.receipt.transactionHash}`);
     return { accountAddress, userOpHash, receipt };
   }
 
-  async addAudience(accountAddress: Address, device: DeviceKey, clientId: string, onStatus?: StatusCallback): Promise<SubmissionResult> {
-    const data = encodeFunctionData({
-      abi: accountAbi,
-      functionName: "addAudience",
-      args: [await hashGoogleAudience(clientId)],
-    });
+  async addAudience(
+    accountAddress: Address,
+    device: DeviceKey,
+    clientId: string,
+    onStatus?: StatusCallback,
+  ): Promise<SubmissionResult> {
+    const data = addAudienceCall(clientId);
     return this.sendTransaction(accountAddress, device, { to: accountAddress, data }, onStatus);
   }
 
-  async removeAudience(accountAddress: Address, device: DeviceKey, clientId: string, onStatus?: StatusCallback): Promise<SubmissionResult> {
-    const data = encodeFunctionData({
-      abi: accountAbi,
-      functionName: "removeAudience",
-      args: [await hashGoogleAudience(clientId)],
-    });
+  async removeAudience(
+    accountAddress: Address,
+    device: DeviceKey,
+    clientId: string,
+    onStatus?: StatusCallback,
+  ): Promise<SubmissionResult> {
+    const data = removeAudienceCall(clientId);
     return this.sendTransaction(accountAddress, device, { to: accountAddress, data }, onStatus);
   }
 
-  async removeDevice(accountAddress: Address, authorizingDevice: DeviceKey, deviceToRemove: Address, onStatus?: StatusCallback): Promise<SubmissionResult> {
-    const data = encodeFunctionData({ abi: accountAbi, functionName: "removeDevice", args: [deviceToRemove] });
-    return this.sendTransaction(accountAddress, authorizingDevice, { to: accountAddress, data }, onStatus);
+  async removeDevice(
+    accountAddress: Address,
+    authorizingDevice: DeviceKey,
+    deviceToRemove: Address,
+    onStatus?: StatusCallback,
+  ): Promise<SubmissionResult> {
+    const data = encodeFunctionData({
+      abi: accountAbi,
+      functionName: "removeDevice",
+      args: [deviceToRemove],
+    });
+    return this.sendTransaction(
+      accountAddress,
+      authorizingDevice,
+      { to: accountAddress, data },
+      onStatus,
+    );
   }
 
   private async baseOperation(sender: Address, signature: Hex): Promise<UserOperationV08> {
@@ -312,7 +421,7 @@ export class Google4337Client {
     });
     const estimatedFees = await this.publicClient.estimateFeesPerGas();
     const priorityFee = estimatedFees.maxPriorityFeePerGas ?? 1_000_000n;
-    const estimatedMaxFee = estimatedFees.maxFeePerGas ?? await this.publicClient.getGasPrice();
+    const estimatedMaxFee = estimatedFees.maxFeePerGas ?? (await this.publicClient.getGasPrice());
     const maxFee = estimatedMaxFee > priorityFee ? estimatedMaxFee : priorityFee;
     const googleMode = signature.startsWith("0x01");
     return {
@@ -342,29 +451,67 @@ export class Google4337Client {
   }
 
   private async getUserOperationHash(operation: UserOperationV08): Promise<Hex> {
-    const initCode = operation.factory && operation.factoryData ? concat([operation.factory, operation.factoryData]) : "0x";
+    const initCode =
+      operation.factory && operation.factoryData
+        ? concat([operation.factory, operation.factoryData])
+        : "0x";
     return this.publicClient.readContract({
       address: this.entryPoint,
       abi: entryPointAbi,
       functionName: "getUserOpHash",
-      args: [{
-        sender: operation.sender,
-        nonce: hexToBigInt(operation.nonce),
-        initCode,
-        callData: operation.callData,
-        accountGasLimits: pack128(operation.verificationGasLimit, operation.callGasLimit),
-        preVerificationGas: hexToBigInt(operation.preVerificationGas),
-        gasFees: pack128(operation.maxPriorityFeePerGas, operation.maxFeePerGas),
-        paymasterAndData: "0x",
-        signature: operation.signature,
-      }],
+      args: [
+        {
+          sender: operation.sender,
+          nonce: hexToBigInt(operation.nonce),
+          initCode,
+          callData: operation.callData,
+          accountGasLimits: pack128(operation.verificationGasLimit, operation.callGasLimit),
+          preVerificationGas: hexToBigInt(operation.preVerificationGas),
+          gasFees: pack128(operation.maxPriorityFeePerGas, operation.maxFeePerGas),
+          paymasterAndData: "0x",
+          signature: operation.signature,
+        },
+      ],
     });
   }
 }
 
 export function addDeviceCall(account: Address, device: Address): Hex {
   const inner = encodeFunctionData({ abi: accountAbi, functionName: "addDevice", args: [device] });
-  return encodeFunctionData({ abi: accountAbi, functionName: "execute", args: [account, 0n, inner] });
+  return encodeFunctionData({
+    abi: accountAbi,
+    functionName: "execute",
+    args: [account, 0n, inner],
+  });
+}
+
+export function addAudienceCall(clientId: string): Hex {
+  return encodeFunctionData({ abi: accountAbi, functionName: "addAudience", args: [clientId] });
+}
+
+export function removeAudienceCall(clientId: string): Hex {
+  return encodeFunctionData({ abi: accountAbi, functionName: "removeAudience", args: [clientId] });
+}
+
+export interface AudienceSetRecord extends AuthorizedClientId {
+  enabled: boolean;
+}
+
+export function reduceAuthorizedClientIds(
+  events: readonly AudienceSetRecord[],
+): AuthorizedClientId[] {
+  const active = new Map<Hex, AuthorizedClientId>();
+  for (const event of events) {
+    if (event.enabled) {
+      active.set(event.audienceHash, {
+        audienceHash: event.audienceHash,
+        clientId: event.clientId,
+      });
+    } else {
+      active.delete(event.audienceHash);
+    }
+  }
+  return [...active.values()].sort((left, right) => left.clientId.localeCompare(right.clientId));
 }
 
 export function googleSignature(proof: GoogleProof): Hex {
@@ -376,7 +523,9 @@ export function googleSignature(proof: GoogleProof): Hex {
 }
 
 export async function hashGoogleAudience(clientId: string): Promise<Hex> {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(clientId)));
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(clientId)),
+  );
   digest[0] = 0;
   return `0x${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
@@ -385,24 +534,41 @@ function dummyDeviceSignature(): Hex {
   return `0x00${"00".repeat(65)}`;
 }
 
-function validateProofContext(proof: GoogleProof, device: Address, factory: Address): void {
-  if (proof.publicInputs.length !== 7) throw new Error("Google proof must contain exactly seven public inputs");
+function validateProofContext(proof: GoogleProof, device: Address, factory: Address): bigint {
+  if (proof.publicInputs.length !== 8)
+    throw new Error("Google proof must contain exactly eight public inputs");
   const proofDevice = getAddress(`0x${proof.publicInputs[2].slice(-40)}`);
   const proofFactory = getAddress(`0x${proof.publicInputs[4].slice(-40)}`);
-  if (!isAddressEqual(proofDevice, device)) throw new Error("Google proof is bound to a different device");
-  if (!isAddressEqual(proofFactory, factory)) throw new Error("Google proof is bound to a different factory");
-  if (hexToBigInt(proof.publicInputs[3]) !== BigInt(BASE_SEPOLIA_CHAIN_ID)) throw new Error("Google proof is bound to a different chain");
+  if (!isAddressEqual(proofDevice, device))
+    throw new Error("Google proof is bound to a different device");
+  if (!isAddressEqual(proofFactory, factory))
+    throw new Error("Google proof is bound to a different factory");
+  if (hexToBigInt(proof.publicInputs[3]) !== BigInt(BASE_SEPOLIA_CHAIN_ID))
+    throw new Error("Google proof is bound to a different chain");
+  const googleNonce = hexToBigInt(proof.publicInputs[7]);
+  if (googleNonce <= 0n || googleNonce > (1n << 64n) - 1n)
+    throw new Error("Google proof has an invalid issued-at nonce");
+  return googleNonce;
 }
 
 function pack128(high: Hex, low: Hex): Hex {
   const highValue = hexToBigInt(high);
   const lowValue = hexToBigInt(low);
-  if (highValue >= 1n << 128n || lowValue >= 1n << 128n) throw new Error("Packed gas value exceeds uint128");
+  if (highValue >= 1n << 128n || lowValue >= 1n << 128n)
+    throw new Error("Packed gas value exceeds uint128");
   return numberToHex((highValue << 128n) | lowValue, { size: 32 });
 }
 
-function quantity(value: bigint): Hex { return numberToHex(value); }
-function bufferedQuantity(value: Hex): Hex { return quantity((hexToBigInt(value) * 120n + 99n) / 100n); }
+function quantity(value: bigint): Hex {
+  return numberToHex(value);
+}
+function bufferedQuantity(value: Hex): Hex {
+  return quantity((hexToBigInt(value) * 120n + 99n) / 100n);
+}
 function safeStringify(value: unknown): string {
-  try { return JSON.stringify(value); } catch { return String(value); }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }

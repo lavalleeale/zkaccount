@@ -1,10 +1,4 @@
-import {
-  createHash,
-  createPrivateKey,
-  createPublicKey,
-  sign,
-  type JsonWebKey,
-} from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey, sign, type JsonWebKey } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -16,7 +10,8 @@ const privateKey = createPrivateKey(
   readFileSync(resolve(circuitDir, "tests/fixtures/rsa-private.pem"), "utf8"),
 );
 const jwk = createPublicKey(privateKey).export({ format: "jwk" }) as JsonWebKey;
-if (!jwk.n || jwk.e !== "AQAB") throw new Error("Fixture must be a 2048-bit RSA key with exponent 65537");
+if (!jwk.n || jwk.e !== "AQAB")
+  throw new Error("Fixture must be a 2048-bit RSA key with exponent 65537");
 
 const MAX_HEADER = 96;
 const MAX_PAYLOAD = 735;
@@ -30,6 +25,7 @@ const device = 0x2222222222222222222222222222222222222222n;
 const validUntil = variant === "expired" ? 2_000_000_500n : 2_000_000_000n;
 const audience = "fixture.apps.googleusercontent.com";
 const subject = "109876543210987654321";
+const issuedAt = 1_999_999_700n;
 const randomness = Uint8Array.from({ length: 32 }, (_, index) => index);
 
 function base64UrlBytes(value: string): Buffer {
@@ -95,7 +91,7 @@ const payloadText = JSON.stringify({
   aud: audience,
   sub: subject,
   nonce: loginNonce(),
-  iat: 1_999_999_700,
+  iat: Number(issuedAt),
   exp: 2_000_000_300,
 });
 const encodedHeader = Buffer.from(headerText).toString("base64url");
@@ -143,6 +139,8 @@ const entries: Record<string, string> = {
   audience_offset: quote(payloadText.indexOf('"aud"')),
   subject_offset: quote(payloadText.indexOf('"sub"')),
   nonce_offset: quote(payloadText.indexOf('"nonce"')),
+  iat_offset: quote(payloadText.indexOf('"iat"')),
+  iat_len: quote(String(issuedAt).length),
   exp_offset: quote(payloadText.indexOf('"exp"')),
   exp_len: quote(String(2_000_000_300).length),
   modulus_bytes: array(modulus),
@@ -157,10 +155,13 @@ const entries: Record<string, string> = {
     factory,
     validUntil,
     low248Sha(keyPreimage),
+    issuedAt,
   ]),
 };
 
-const output = `${Object.entries(entries).map(([key, value]) => `${key} = ${value}`).join("\n")}\n`;
+const output = `${Object.entries(entries)
+  .map(([key, value]) => `${key} = ${value}`)
+  .join("\n")}\n`;
 const outputPath = resolve(circuitDir, "Prover.toml");
 writeFileSync(outputPath, output);
 process.stdout.write(`Wrote deterministic fixture inputs to ${outputPath}\n`);

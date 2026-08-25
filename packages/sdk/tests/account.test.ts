@@ -7,7 +7,11 @@ const credentialId = Uint8Array.from([1, 2, 3, 4]).buffer;
 
 const assertion = {
   rawId: credentialId,
-  response: { get userHandle() { return assertionUserHandle; } },
+  response: {
+    get userHandle() {
+      return assertionUserHandle;
+    },
+  },
   getClientExtensionResults: () => ({}),
 };
 

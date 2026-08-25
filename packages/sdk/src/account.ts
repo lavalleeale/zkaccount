@@ -34,7 +34,7 @@ interface PrfOutput {
 /** Creates a discoverable passkey and prepares its app-specific device key. */
 export async function createPasskeyDeviceKey(options: PasskeyDeviceOptions): Promise<DeviceKey> {
   assertPasskeySupport();
-  const credential = await navigator.credentials.create({
+  const credential = (await navigator.credentials.create({
     publicKey: {
       challenge: randomBytes(32),
       rp: { name: "zkAccount" },
@@ -56,7 +56,7 @@ export async function createPasskeyDeviceKey(options: PasskeyDeviceOptions): Pro
       timeout: 120_000,
       extensions: await prfInput(options.scope),
     },
-  }) as PublicKeyCredential | null;
+  })) as PublicKeyCredential | null;
 
   if (!credential) throw new Error("Passkey creation was cancelled");
   const creationPrf = readPrfResult(credential);
@@ -77,7 +77,7 @@ async function getPasskeyDeviceKey(
   allowCredentials?: PublicKeyCredentialDescriptor[],
 ): Promise<DeviceKey> {
   assertPasskeySupport();
-  const credential = await navigator.credentials.get({
+  const credential = (await navigator.credentials.get({
     publicKey: {
       challenge: randomBytes(32),
       allowCredentials,
@@ -85,7 +85,7 @@ async function getPasskeyDeviceKey(
       timeout: 120_000,
       extensions: await prfInput(options.scope),
     },
-  }) as PublicKeyCredential | null;
+  })) as PublicKeyCredential | null;
 
   if (!credential) throw new Error("Passkey authentication was cancelled");
   if (!allowCredentials) {
@@ -109,27 +109,24 @@ async function prfInput(scope: string): Promise<AuthenticationExtensionsClientIn
 }
 
 function readPrfResult(credential: PublicKeyCredential): Uint8Array<ArrayBuffer> | undefined {
-  const output = credential.getClientExtensionResults() as AuthenticationExtensionsClientOutputs & PrfOutput;
+  const output = credential.getClientExtensionResults() as AuthenticationExtensionsClientOutputs &
+    PrfOutput;
   const first = output.prf?.results?.first;
   return first ? new Uint8Array(first) : undefined;
 }
 
-async function deviceFromPrf(
-  prf: Uint8Array<ArrayBuffer>,
-  scope: string,
-): Promise<DeviceKey> {
+async function deviceFromPrf(prf: Uint8Array<ArrayBuffer>, scope: string): Promise<DeviceKey> {
   // PRF output is credential-bound key material. Domain-separate it once more
   // before interpreting it as a secp256k1 scalar.
   for (let counter = 0; counter < 256; counter++) {
-    const input = new Uint8Array(concatBytes([
-      stringToBytes(`${DEVICE_KEY_DOMAIN}:SECP256K1:${scope}:`),
-      prf,
-      new Uint8Array([counter]),
-    ]));
-    const digest = new Uint8Array(await crypto.subtle.digest(
-      "SHA-256",
-      input,
-    ));
+    const input = new Uint8Array(
+      concatBytes([
+        stringToBytes(`${DEVICE_KEY_DOMAIN}:SECP256K1:${scope}:`),
+        prf,
+        new Uint8Array([counter]),
+      ]),
+    );
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", input));
     const scalar = bytesToBigInt(digest);
     if (scalar > 0n && scalar < SECP256K1_ORDER) {
       const account = privateKeyToAccount(bytesToHex(digest) as Hex);
@@ -150,7 +147,9 @@ function createMemoryOnlyDeviceKey(): DeviceKey {
 }
 
 async function domainSalt(value: string): Promise<Uint8Array<ArrayBuffer>> {
-  return new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(stringToBytes(value))));
+  return new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new Uint8Array(stringToBytes(value))),
+  );
 }
 
 function scopeUserId(scope: string): Promise<Uint8Array<ArrayBuffer>> {

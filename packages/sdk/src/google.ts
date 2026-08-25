@@ -141,7 +141,9 @@ export function parseGoogleIdToken(idToken: string): GoogleClaims {
   return JSON.parse(atob(padded)) as GoogleClaims;
 }
 
-async function waitForGoogleIdentityServices(timeoutMs = 10_000): Promise<NonNullable<Window["google"]>> {
+async function waitForGoogleIdentityServices(
+  timeoutMs = 10_000,
+): Promise<NonNullable<Window["google"]>> {
   const started = Date.now();
   while (!window.google?.accounts?.id) {
     if (Date.now() - started > timeoutMs) {

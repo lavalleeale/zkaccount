@@ -45,9 +45,7 @@ export async function warmGoogleProver(): Promise<void> {
   await getGoogleProverRuntime();
 }
 
-export async function proveGoogleAuthorization(
-  login: GoogleLoginResult,
-): Promise<GoogleProof> {
+export async function proveGoogleAuthorization(login: GoogleLoginResult): Promise<GoogleProof> {
   const [inputs, runtime] = await Promise.all([
     buildGoogleCircuitInputs(login),
     getGoogleProverRuntime(),
@@ -67,8 +65,7 @@ export async function proveGoogleAuthorization(
 
 /** Resolves the deterministic identity locally so callers can check an existing device before proving. */
 export async function googleIdentityCommitment(claims: GoogleClaims): Promise<Hex> {
-  if (claims.iss !== "https://accounts.google.com")
-    throw new Error("Unsupported Google issuer");
+  if (claims.iss !== "https://accounts.google.com") throw new Error("Unsupported Google issuer");
   if (!claims.sub || claims.sub.length > MAX_SUBJECT)
     throw new Error("Google subject is missing or too long");
   const subjectBytes = new TextEncoder().encode(claims.sub);
@@ -114,9 +111,7 @@ async function createGoogleProverRuntime(): Promise<GoogleProverRuntime> {
 }
 
 function desiredProverThreads(): number {
-  const available = typeof navigator === "undefined"
-    ? 1
-    : navigator.hardwareConcurrency || 1;
+  const available = typeof navigator === "undefined" ? 1 : navigator.hardwareConcurrency || 1;
   return Math.max(1, Math.min(available, 8));
 }
 
@@ -134,27 +129,23 @@ async function enqueueProof<T>(task: () => Promise<T>): Promise<T> {
   }
 }
 
-export async function buildGoogleCircuitInputs(
-  login: GoogleLoginResult,
-): Promise<InputMap> {
+export async function buildGoogleCircuitInputs(login: GoogleLoginResult): Promise<InputMap> {
   const parsed = parseRawToken(login.idToken);
-  if (parsed.header.alg !== "RS256")
-    throw new Error("Google token does not use RS256");
+  if (parsed.header.alg !== "RS256") throw new Error("Google token does not use RS256");
   if (login.claims.iss !== "https://accounts.google.com")
     throw new Error("Unsupported Google issuer");
   if (!login.claims.sub || login.claims.sub.length > MAX_SUBJECT)
     throw new Error("Google subject is missing or too long");
-  if (login.claims.aud.length > MAX_AUDIENCE)
-    throw new Error("Google audience is too long");
+  if (login.claims.aud.length > MAX_AUDIENCE) throw new Error("Google audience is too long");
+  if (!Number.isSafeInteger(login.claims.iat) || login.claims.iat < 0)
+    throw new Error("Google token has an invalid issued-at timestamp");
   if (login.claims.exp < login.challenge.proofExpiry)
     throw new Error("Google token expires before the proof authorization");
 
   const jwk = await fetchGoogleJwk(parsed.header.kid);
-  if (jwk.e !== "AQAB")
-    throw new Error("Only Google RSA exponent 65537 is supported");
+  if (jwk.e !== "AQAB") throw new Error("Only Google RSA exponent 65537 is supported");
   const modulus = fromBase64Url(jwk.n);
-  if (modulus.length !== 256)
-    throw new Error("Only 2048-bit Google RSA keys are supported");
+  if (modulus.length !== 256) throw new Error("Only 2048-bit Google RSA keys are supported");
 
   const headerBytes = new TextEncoder().encode(parsed.headerText);
   const payloadBytes = new TextEncoder().encode(parsed.payloadText);
@@ -189,22 +180,12 @@ export async function buildGoogleCircuitInputs(
     subject_len: subjectBytes.length,
     login_randomness: byteInputs(hexToBytes(login.challenge.loginRandomness)),
     alg_offset: requiredOffset(parsed.headerText, '"alg":"RS256"'),
-    issuer_offset: requiredOffset(
-      parsed.payloadText,
-      '"iss":"https://accounts.google.com"',
-    ),
-    audience_offset: requiredOffset(
-      parsed.payloadText,
-      `"aud":"${login.claims.aud}"`,
-    ),
-    subject_offset: requiredOffset(
-      parsed.payloadText,
-      `"sub":"${login.claims.sub}"`,
-    ),
-    nonce_offset: requiredOffset(
-      parsed.payloadText,
-      `"nonce":"${login.challenge.nonce}"`,
-    ),
+    issuer_offset: requiredOffset(parsed.payloadText, '"iss":"https://accounts.google.com"'),
+    audience_offset: requiredOffset(parsed.payloadText, `"aud":"${login.claims.aud}"`),
+    subject_offset: requiredOffset(parsed.payloadText, `"sub":"${login.claims.sub}"`),
+    nonce_offset: requiredOffset(parsed.payloadText, `"nonce":"${login.challenge.nonce}"`),
+    iat_offset: requiredOffset(parsed.payloadText, `"iat":${login.claims.iat}`),
+    iat_len: String(login.claims.iat).length,
     exp_offset: requiredOffset(parsed.payloadText, `"exp":${login.claims.exp}`),
     exp_len: String(login.claims.exp).length,
     modulus_bytes: byteInputs(modulus),
@@ -219,6 +200,7 @@ export async function buildGoogleCircuitInputs(
       factory,
       validUntil,
       keyHash,
+      BigInt(login.claims.iat),
     ].map(field),
   };
 }
@@ -240,8 +222,7 @@ async function fetchGoogleJwk(kid: string): Promise<GoogleJwk> {
   const response = await fetch("https://www.googleapis.com/oauth2/v3/certs", {
     cache: "no-cache",
   });
-  if (!response.ok)
-    throw new Error(`Google JWKS request failed: ${response.status}`);
+  if (!response.ok) throw new Error(`Google JWKS request failed: ${response.status}`);
   const { keys } = (await response.json()) as { keys: GoogleJwk[] };
   const key = keys.find(
     (candidate) =>
@@ -250,8 +231,7 @@ async function fetchGoogleJwk(kid: string): Promise<GoogleJwk> {
       candidate.alg === "RS256" &&
       candidate.use === "sig",
   );
-  if (!key)
-    throw new Error(`Google signing key ${kid} is not in the current JWKS`);
+  if (!key) throw new Error(`Google signing key ${kid} is not in the current JWKS`);
   return key;
 }
 
@@ -272,9 +252,7 @@ async function googleKeyCommitment(modulus: Uint8Array): Promise<bigint> {
 }
 
 async function low248Sha(bytes: Uint8Array): Promise<bigint> {
-  const digest = new Uint8Array(
-    await crypto.subtle.digest("SHA-256", new Uint8Array(bytes)),
-  );
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(bytes)));
   digest[0] = 0;
   return bytesToBigInt(digest);
 }
@@ -290,10 +268,7 @@ function packSubject(subject: Uint8Array): [bigint, bigint, bigint] {
 
 function splitLimbs(value: bigint): bigint[] {
   const mask = (1n << 120n) - 1n;
-  return Array.from(
-    { length: 18 },
-    (_, index) => (value >> BigInt(index * 120)) & mask,
-  );
+  return Array.from({ length: 18 }, (_, index) => (value >> BigInt(index * 120)) & mask);
 }
 
 function limbInputs(value: bigint): string[] {
@@ -311,9 +286,7 @@ function byteInputs(bytes: Uint8Array): number[] {
 
 function pad(bytes: Uint8Array, length: number): Uint8Array {
   if (bytes.length > length)
-    throw new Error(
-      `Input length ${bytes.length} exceeds circuit bound ${length}`,
-    );
+    throw new Error(`Input length ${bytes.length} exceeds circuit bound ${length}`);
   const result = new Uint8Array(length);
   result.set(bytes);
   return result;
@@ -330,9 +303,7 @@ function requiredOffset(text: string, fragment: string): number {
 
 function fromBase64Url(value: string): Uint8Array {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-  const binary = atob(
-    normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "="),
-  );
+  const binary = atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "="));
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
