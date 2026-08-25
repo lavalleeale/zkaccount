@@ -69,7 +69,11 @@ input:focus {
   outline: 2px solid #dbe5f7;
 }
 .google-button {
+  display: none;
   margin: 18px 0;
+}
+.google-button.visible {
+  display: block;
   min-height: 44px;
 }
 section {

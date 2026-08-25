@@ -56,9 +56,10 @@ function App() {
       setAuthorizedClientIds([]);
       setStatus(
         nextDevice.protection === "passkey-prf"
-          ? "Passkey ready. Continue with Google to resolve the smart account."
-          : "Passkey ready with a memory-only device key. Continue with Google.",
+          ? "Passkey ready. Choose Continue with Google to resolve the smart account."
+          : "Memory-only device key ready. Choose Continue with Google.",
       );
+      await start(nextDevice);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
@@ -81,10 +82,10 @@ function App() {
     );
   }
 
-  async function start() {
-    if (!button.current || !clientId || !factory || !wallet || !device) {
+  async function start(localDevice: DeviceKey) {
+    if (!button.current || !clientId || !factory || !wallet) {
       setStatus(
-        device
+        localDevice
           ? "Set VITE_GOOGLE_CLIENT_ID and VITE_ACCOUNT_FACTORY first"
           : "Create or unlock the Demo A passkey first",
       );
@@ -103,7 +104,7 @@ function App() {
         factory,
         chainId: 84532,
         button: button.current,
-        device,
+        device: localDevice,
       });
       setLogin(result);
       setDevice(result.device);
@@ -214,9 +215,6 @@ function App() {
         <button disabled={busy} className="secondary" onClick={() => void loadPasskey(true)}>
           Create passkey
         </button>
-        <button disabled={busy || !device} onClick={start}>
-          Continue with Google
-        </button>
         {proof && !authorized && (
           <button disabled={busy || !bundlerUrl} onClick={authorizeDevice}>
             Deploy / authorize device
@@ -238,7 +236,7 @@ function App() {
           </button>
         )}
       </div>
-      <div ref={button} className="google-button" />
+      <div ref={button} className={`google-button${device ? " visible" : ""}`} />
       <section>
         <strong>Status</strong>
         <span>{status}</span>
