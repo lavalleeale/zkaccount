@@ -7,6 +7,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "test": "tsx tests/account.test.ts && tsx tests/userop.test.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
@@ -16,6 +17,8 @@
     "viem": "^2.37.3"
   },
   "devDependencies": {
+    "@types/node": "^24.3.0",
+    "tsx": "^4.20.5",
     "typescript": "^5.9.2"
   }
 }

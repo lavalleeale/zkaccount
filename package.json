@@ -18,8 +18,7 @@
     "circuit:test-negative": "tsx circuits/scripts/test-negative.ts",
     "circuit:test-bbjs": "tsx circuits/scripts/test-bbjs.ts",
     "circuit:generate-verifier": "tsx circuits/scripts/generate-verifier.ts",
-    "sdk:test-account": "tsx packages/sdk/tests/account.test.ts",
-    "sdk:test-userop": "tsx packages/sdk/tests/userop.test.ts",
+    "sdk:test": "npm test -w @zkaccount/sdk",
     "dev:a": "npm run dev -w @zkaccount/demo-a",
     "dev:b": "npm run dev -w @zkaccount/demo-b"
   },

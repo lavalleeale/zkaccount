@@ -84,11 +84,7 @@ function App() {
 
   async function start(localDevice: DeviceKey) {
     if (!button.current || !clientId || !factory || !wallet) {
-      setStatus(
-        localDevice
-          ? "Set VITE_GOOGLE_CLIENT_ID and VITE_ACCOUNT_FACTORY first"
-          : "Create or unlock the Demo A passkey first",
-      );
+      setStatus("Set VITE_GOOGLE_CLIENT_ID and VITE_ACCOUNT_FACTORY first");
       return;
     }
     setBusy(true);

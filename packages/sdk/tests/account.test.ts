@@ -22,7 +22,8 @@ Object.defineProperty(globalThis, "window", {
 Object.defineProperty(globalThis, "navigator", {
   value: {
     credentials: {
-      create: async ({ publicKey }: PublicKeyCredentialCreationOptions) => {
+      create: async ({ publicKey }: CredentialCreationOptions) => {
+        if (!publicKey) throw new Error("Expected public-key credential creation options");
         assertionUserHandle = publicKey.user.id as ArrayBuffer;
         return assertion;
       },

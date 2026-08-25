@@ -129,7 +129,7 @@ Google's signing keys are not manually administered. The scheduled Chainlink CRE
 | `contracts/src`                 | Account, factory, policy validator, key registry, and generated verifier |
 | `contracts/test`                | Foundry policy tests plus real-proof verifier fixtures                   |
 | `cre/google-jwks`               | Scheduled Chainlink CRE Google JWKS consensus workflow                   |
-| `deployments/base-sepolia.json` | Current Base Sepolia addresses and deployment transactions               |
+| `deployments/base-sepolia.json` | Legacy, current-artifact-incompatible Base Sepolia deployment metadata   |
 
 ## Legacy Base Sepolia deployment
 
@@ -153,10 +153,9 @@ Run the full local validation suite from the Nix development shell:
 forge test -vv
 npm run circuit:fixture
 npm run circuit:test-negative
-npm run circuit:test-bbjs
 npm run circuit:generate-verifier
-npm run sdk:test-account
-npm run sdk:test-userop
+npm run circuit:test-bbjs
+npm run sdk:test
 npm run typecheck
 npm ci --prefix cre/google-jwks
 npm run typecheck:cre
