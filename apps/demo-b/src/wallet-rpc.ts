@@ -1,14 +1,15 @@
 import {
   getAddress,
+  hashMessage,
+  hashTypedData,
   hexToBigInt,
   isAddress,
   isAddressEqual,
   isHex,
   type Address,
   type Hex,
-  type PrivateKeyAccount,
 } from "viem";
-import type { DeviceKey, Google4337Client } from "@zkaccount/sdk";
+import { signWithPasskey, type DeviceKey, type Google4337Client } from "@zkaccount/sdk";
 export const WALLET_METHODS = [
   "eth_sendTransaction",
   "personal_sign",
@@ -174,7 +175,8 @@ export async function executeWalletRequest(options: ExecuteWalletRequestOptions)
     }
     case "personal_sign": {
       const parsed = parsePersonalSign(options.request.params, options.account);
-      return options.device.account.signMessage({ message: { raw: parsed.message } });
+      options.onStatus?.("Confirm the message signature with your passkey");
+      return signWithPasskey(options.device, hashMessage({ raw: parsed.message }));
     }
     case "eth_signTypedData_v4": {
       const parsed = parseTypedData(
@@ -182,15 +184,12 @@ export async function executeWalletRequest(options: ExecuteWalletRequestOptions)
         options.account,
         options.wallet.chain.id,
       );
-      return signTypedData(options.device.account, parsed.typedData);
+      options.onStatus?.("Confirm the typed-data signature with your passkey");
+      return signWithPasskey(options.device, hashTypedData(parsed.typedData));
     }
     default:
       throw new Error(`Unsupported wallet method ${options.request.method}`);
   }
-}
-
-function signTypedData(account: PrivateKeyAccount, typedData: TypedDataPayload): Promise<Hex> {
-  return account.signTypedData(typedData as Parameters<PrivateKeyAccount["signTypedData"]>[0]);
 }
 
 function firstObject(params: unknown, label: string): Record<string, unknown> {

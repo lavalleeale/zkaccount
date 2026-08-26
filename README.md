@@ -2,42 +2,46 @@
 
 **Recover the same ERC-4337 smart account from any app with Google—without revealing the Google account onchain or trusting an application backend.**
 
-zkAccount is a Sepolia-testnet MVP for portable smart accounts, deployed on both Base Sepolia and Ethereum Sepolia. A Google ID token is verified inside a Noir zero-knowledge circuit in the browser. The resulting proof resolves a deterministic account and authorizes an app-specific, passkey-derived device key. After that one-time bootstrap, normal transactions use the device key and do not require another Google proof.
+zkAccount is a Sepolia-testnet MVP for portable smart accounts. A Google ID token is verified inside a Noir zero-knowledge circuit in the browser. The resulting proof resolves a deterministic account and authorizes an app-specific WebAuthn P-256 credential. After that one-time bootstrap, every normal transaction is signed by a fresh user-verified passkey assertion and does not require another Google proof.
 
-The repository includes the complete path: two independent demo apps, browser proving, an SDK, ERC-4337 contracts, the generated UltraHonk verifier, legacy Base Sepolia deployment metadata, and a Chainlink CRE workflow for Google key rotation.
+Google authorization is centralized in a single app, Demo A, which is the only configured Google OAuth client and doubles as a Google-backed passkey management portal. Any other app creates its passkey locally, then redirects to Demo A to authorize it with Google; the requesting app never sees the Google ID token or the OAuth client secret.
 
-> **MVP status:** account derivation, browser proof generation, contract verification, device authorization, and UserOperation construction are implemented and tested. Live end-to-end transactions require an EntryPoint v0.8 bundler for the selected network. See [MVP constraints](#mvp-constraints).
+The repository includes the complete path: two demo apps, browser proving, an SDK, ERC-4337 contracts, the generated UltraHonk verifier, legacy Base Sepolia deployment metadata, and a Chainlink CRE workflow for Google key rotation.
+
+> **MVP status:** account derivation, browser proof generation, native WebAuthn verification, cross-app redirect authorization, device authorization, and UserOperation construction are implemented and tested. The current stack is deployed and its `GoogleKeyRegistry` populated on both Base Sepolia and Ethereum Sepolia (see [current deployments](#deploy-the-current-contract-stack)). Live transactions also require an EntryPoint v0.8 bundler. See [MVP constraints](#mvp-constraints).
 
 ## The demo
 
-The two apps deliberately share no browser state:
+Demo A is the sole Google OAuth client and passkey manager; Demo B never sees a Google ID token:
 
-1. **Demo A** creates or unlocks a passkey, authenticates with Google, generates a ZK proof locally, and authorizes Demo A's device key.
-2. **Demo B** repeats the flow from a separate origin, then acts as a Base Sepolia or Ethereum Sepolia web wallet for AppKit and other WalletConnect dapps.
-3. Both apps derive the **same smart-account address** from the same private Google identity.
-4. Either authorized device can send an ERC-4337 transaction, manage devices, or revoke itself. Demo A can also manage approved Google OAuth audiences.
+1. **Demo B** creates a passkey on its own origin, then redirects to Demo A with its RP ID, public key, a callback URL, a one-time state value, and the chain ID.
+2. **Demo A** validates the request, shows the requesting origin, RP ID, device address, chain, and action before doing anything, authenticates with Google, generates a ZK proof locally, and submits the add-device UserOperation. It never redirects automatically—it shows the approved, rejected, or failed result first, with an explicit link back to Demo B.
+3. **Demo B** verifies the authorization onchain before saving the wallet, then acts as a Base Sepolia or Ethereum Sepolia web wallet for AppKit and other WalletConnect dapps.
+4. Demo A also works as a standalone dashboard: resolve any account with Google, list its authorized devices by cleartext RP ID, and revoke one with a fresh Google authorization—no local passkey required.
+5. Both apps derive the **same smart-account address** from the same private Google identity, and either authorized device can send an ERC-4337 transaction or revoke itself locally.
 
-This demonstrates identity portability without exporting a seed phrase, sharing local storage, or sending the Google JWT to a project server.
+This demonstrates identity portability without exporting a seed phrase, sharing local storage, or sending the Google JWT to more than one, deliberately chosen application.
 
 ```mermaid
 flowchart LR
-    G["Google ID token"] --> P["Browser Noir prover"]
-    P -->|"private: subject + JWT"| Z["UltraHonk proof"]
-    Z --> A["Deterministic ERC-4337 account"]
-    DA["Demo A passkey key"] --> A
-    DB["Demo B passkey key"] --> A
-    A --> U["Device-signed UserOperations"]
+    B["Demo B: create passkey"] -->|"redirect: rpId, publicKey, callback, state, chainId"| A
+    G["Google ID token"] --> A["Demo A: passkey manager"]
+    A -->|"Browser Noir prover"| Z["UltraHonk proof"]
+    Z --> C["Deterministic ERC-4337 account"]
+    A -->|"redirect result: status, account, device"| B
+    C --> U["Passkey-signed UserOperations"]
 ```
 
 ## What the MVP proves
 
 - Google signed an RS256 OIDC token for a hidden `sub`.
 - The token has the expected issuer, algorithm, audience, nonce, issued-at time, and expiry.
-- The nonce binds authorization to one device address, chain, factory, and ten-minute proof window.
+- The nonce binds authorization to one action (add or remove a device), device address, chain, factory, and ten-minute proof window.
 - The private Google identity maps to the same Poseidon2 commitment—and therefore the same CREATE2 account—across independent apps.
+- The proof's audience matches the factory's immutable root Google OAuth client; no other client can authorize devices.
 - The signing key belongs to the CRE-managed set of current Google JWKs.
 
-Only eight field elements are public: the identity commitment, audience hash, device address, chain ID, factory address, authorization expiry, Google key commitment, and the JWT issued-at time used as the account's monotonic Google nonce. The JWT and Google subject remain private.
+Only nine field elements are public: the identity commitment, audience hash, device address, chain ID, factory address, authorization expiry, Google key commitment, the JWT issued-at time used as the account's monotonic Google nonce, and the add/remove action discriminator. The JWT and Google subject remain private.
 
 ## Run the MVP
 
@@ -54,10 +58,9 @@ Without Nix, install Node.js 22+ and use the pinned Nargo and Barretenberg versi
 
 ### 2. Configure the demo origins
 
-Use the project's audience-matched Google OAuth web client, or deploy a factory with your own root Google OAuth client ID. The factory derives its `rootAudience` as the low-248 SHA-256 hash of that client ID. Allow both local origins on that client:
+Use the project's audience-matched Google OAuth web client, or deploy a factory with your own root Google OAuth client ID. The factory derives its immutable `rootAudience` as the low-248 SHA-256 hash of that client ID. Demo A is the only app that needs a configured OAuth client—allow its origin on that client:
 
 - `http://localhost:5173` for Demo A
-- `http://localhost:5174` for Demo B
 
 Then configure each app:
 
@@ -66,22 +69,37 @@ cp apps/demo-a/.env.example apps/demo-a/.env.local
 cp apps/demo-b/.env.example apps/demo-b/.env.local
 ```
 
+Demo A (the Google client and passkey manager):
+
 ```dotenv
 VITE_GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 VITE_BASE_SEPOLIA_FACTORY=your-base-sepolia-factory
 VITE_BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
 VITE_BASE_SEPOLIA_BUNDLER_URL=https://your-base-sepolia-bundler.example/rpc
 VITE_ETHEREUM_SEPOLIA_FACTORY=your-ethereum-sepolia-factory
-VITE_ETHEREUM_SEPOLIA_FACTORY_DEPLOYMENT_BLOCK=11567335
+VITE_ETHEREUM_SEPOLIA_FACTORY_DEPLOYMENT_BLOCK=11568525
 VITE_ETHEREUM_SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
 VITE_ETHEREUM_SEPOLIA_BUNDLER_URL=https://your-ethereum-sepolia-bundler.example/rpc
-# Demo B only: create a wallet project at https://dashboard.walletconnect.com
+```
+
+Demo B (no Google client; it redirects to Demo A instead):
+
+```dotenv
+VITE_PASSKEY_MANAGER_URL=http://localhost:5173/
+VITE_BASE_SEPOLIA_FACTORY=your-base-sepolia-factory
+VITE_BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
+VITE_BASE_SEPOLIA_BUNDLER_URL=https://your-base-sepolia-bundler.example/rpc
+VITE_ETHEREUM_SEPOLIA_FACTORY=your-ethereum-sepolia-factory
+VITE_ETHEREUM_SEPOLIA_FACTORY_DEPLOYMENT_BLOCK=11568525
+VITE_ETHEREUM_SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
+VITE_ETHEREUM_SEPOLIA_BUNDLER_URL=https://your-ethereum-sepolia-bundler.example/rpc
+# Create a wallet project at https://dashboard.walletconnect.com
 VITE_REOWN_PROJECT_ID=your-walletconnect-project-id
 ```
 
-The current eight-input, `iat`-backed protocol requires a fresh deployment. The legacy factory recorded in `deployments/base-sepolia.json` is permanently bound to its original account bytecode and seven-input verifier and is not compatible with the current SDK. A custom OAuth client also requires a correspondingly configured deployment. The bundler must support EntryPoint v0.8.
+Both apps must agree on the same factory per chain—Demo A submits the authorization UserOperation for devices Demo B creates. The current, compatible factories are recorded in `deployments/base-sepolia-current.json` and `deployments/ethereum-sepolia.json` (see [Deploy the current contract stack](#deploy-the-current-contract-stack)); `deployments/base-sepolia.json` is an older, incompatible deployment. A custom OAuth client requires a correspondingly configured fresh deployment. The bundler must support EntryPoint v0.8, and the chain must expose the P-256 verifier at `0x100`.
 
-### 3. Start both independent apps
+### 3. Start both apps
 
 ```sh
 npm run dev:a
@@ -91,38 +109,42 @@ npm run dev:a
 npm run dev:b
 ```
 
-Open both URLs, choose the same network in each, create a distinct passkey in each app, and authenticate with the same Google account. Account prediction and local proof generation work without a bundler. To authorize a device onchain, fund the displayed counterfactual address with the selected network's Sepolia ETH before the ten-minute proof expires, then submit the bootstrap UserOperation.
+Open Demo B, choose a network, and click **Create passkey**. It creates a WebAuthn credential locally, then redirects to Demo A with the request. Review the callback host, RP ID, device address, and chain on Demo A, authenticate with Google, and let the browser generate the proof. Fund the displayed counterfactual account with the selected network's Sepolia ETH before the ten-minute proof expires, then submit the authorization. Demo A never redirects automatically—use the explicit **Return to requesting app** link once the result is shown.
 
-After authorization, Demo B stores only the public account address, factory, and chain ID. On a return visit, unlocking the same passkey re-derives the device key and checks its onchain authorization without requiring Google again. Private keys, Google tokens, proofs, and PRF output remain memory-only.
+After authorization, Demo B stores the public account address, factory, chain ID, credential ID, P-256 coordinates, and RP ID hash. On a return visit it reloads that public metadata and checks the onchain authorization without requiring Google again. Private keys remain inside the authenticator; Google tokens and proofs never leave Demo A.
 
-To use Demo B as a wallet, open an AppKit dapp's WalletConnect flow and configure Demo B as a custom web wallet with the URL `http://localhost:5174/wc`. AppKit opens `?uri=wc:...`; Demo B also accepts a copied WalletConnect URI manually. It advertises only the currently selected chain—Base Sepolia (`eip155:84532`) or Ethereum Sepolia (`eip155:11155111`)—and supports `eth_sendTransaction`, `personal_sign`, and `eth_signTypedData_v4`. Disconnect active sessions before changing networks. Every connection and request requires explicit approval, and signing requires the passkey to be unlocked.
+To use Demo B as a wallet, open an AppKit dapp's WalletConnect flow and configure Demo B as a custom web wallet with the URL `http://localhost:5174/wc`. AppKit opens `?uri=wc:...`; Demo B also accepts a copied WalletConnect URI manually. It advertises only the currently selected chain—Base Sepolia (`eip155:84532`) or Ethereum Sepolia (`eip155:11155111`)—and supports `eth_sendTransaction`, `personal_sign`, and `eth_signTypedData_v4`. Disconnect active sessions before changing networks. Every connection and request requires explicit approval, and every transaction or message signature opens a fresh passkey prompt.
 
 ## How it works
 
 ### Browser and SDK
 
-`@zkaccount/sdk` handles Google Identity Services, nonce construction, passkey PRF key derivation, identity commitments, threaded bb.js proving, account prediction, and EntryPoint v0.8 UserOperations. Demo B uses Reown WalletKit for encrypted WalletConnect sessions and request delivery. The full ID token stays in the page and is never logged or sent to a zkAccount backend.
+`@zkaccount/sdk` handles Google Identity Services, nonce construction, ES256 passkey registration and assertion encoding, identity commitments, threaded bb.js proving, account prediction, EntryPoint v0.8 UserOperations, and the cross-app redirect protocol (`packages/sdk/src/redirect.ts`). Demo B uses Reown WalletKit for encrypted WalletConnect sessions and request delivery. The full ID token stays on Demo A's page and is never logged, sent to another app, or sent to a zkAccount backend.
 
-PRF-capable passkeys deterministically derive an app-scoped secp256k1 device key in memory. If the authenticator does not support PRF, the SDK falls back to a random memory-only key that is lost on reload and must be authorized again.
+The redirect protocol carries `rpId`, `publicKey`, `callback`, `state`, and `chainId` as query parameters. The manager requires the callback to be HTTPS (or HTTP `localhost`/loopback for local development) with no credentials or fragment, and requires the callback's hostname to exactly equal the requested RP ID—an app cannot request authorization for a passkey bound to a different origin. The result is returned by appending `zkaccount_status`, `zkaccount_state`, `zkaccount_chain_id`, `zkaccount_account`, `zkaccount_device`, and an optional `zkaccount_error` to the callback, preserving any query parameters the callback already had. The requesting app must treat its locally generated `state` as one-time, verify the returned `state` matches it, and independently check onchain that the returned device is actually authorized before trusting the result.
+
+The SDK accepts discoverable ES256 credentials only. It extracts and stores public metadata after registration, uses the final UserOperation or ERC-1271 digest as the WebAuthn challenge, parses and normalizes the authenticator's DER P-256 signature, and never exports or derives a private key.
 
 ### Circuit
 
-The Noir circuit reconstructs the JWT signing input, verifies the 2048-bit RSA/PKCS#1 v1.5 SHA-256 signature, checks the OIDC claims and login nonce, exposes the signed `iat` as a monotonic Google authorization nonce, derives a private Poseidon2 identity commitment, and commits to the Google RSA key. The generated Solidity UltraHonk verifier is tested against a real fixture proof.
+The Noir circuit reconstructs the JWT signing input, verifies the 2048-bit RSA/PKCS#1 v1.5 SHA-256 signature, checks the OIDC claims and login nonce, exposes the signed `iat` as a monotonic Google authorization nonce, derives a private Poseidon2 identity commitment, and commits to the Google RSA key. The nonce binds an action discriminator—add or remove a device—so a proof authorized for one action or device cannot be replayed for another. The generated Solidity UltraHonk verifier is tested against a real fixture proof.
 
-The eight public inputs are ordered as identity commitment, audience hash, device address, chain ID, factory address, authorization expiry, Google key commitment, and `iat`-backed Google nonce.
+The nine public inputs are ordered as identity commitment, audience hash, device address, chain ID, factory address, authorization expiry, Google key commitment, `iat`-backed Google nonce, and the action (`1` = add device, `2` = remove device).
 
 ### Smart account
 
-`GoogleAccountFactory` deterministically deploys one account per identity commitment. `GoogleAccount` supports two ERC-4337 signature modes:
+`GoogleAccountFactory` deterministically deploys one account per identity commitment, and pins an immutable `rootAudience` derived from its configured Google OAuth client ID at construction—there is no per-account audience administration, so only that one client can ever authorize devices. `GoogleAccount` supports two ERC-4337 signature modes:
 
-- `0x01`: a short-lived Google proof that can execute exactly one `addDevice(proofBoundDevice)` self-call;
-- `0x00`: a low-s secp256k1 signature from an authorized device for subsequent operations.
+- `0x01`: a short-lived Google proof that can execute exactly one proof-bound `addDevice` or `removeDevice` self-call, matching the proof's action;
+- `0x00`: a canonical WebAuthn assertion from an authorized P-256 credential for subsequent operations.
 
-The account also implements ERC-1271. Personal-message and EIP-712 requests return a canonical device signature that `isValidSignature` accepts only while that device remains authorized. Demo B does not advertise raw transaction signing, WalletConnect-driven chain switching, or batch calls; its local selector chooses one supported Sepolia network at a time.
+`addDevice` takes a cleartext RP ID string, derives its SHA-256 hash onchain, and emits it in the `DeviceSet` event; the SDK reconstructs each account's current, labeled device set purely from event logs (`Google4337Client.listAuthorizedDevices`), without storing duplicate RP ID strings in contract state.
+
+The account verifies the assertion type and challenge, RP ID hash, user-presence and user-verification flags, backup-flag consistency, and P-256 signature through the native `0x100` precompile. It also implements ERC-1271: personal-message and EIP-712 requests return the same canonical WebAuthn envelope that `isValidSignature` accepts only while that credential remains authorized. Demo B does not advertise raw transaction signing, WalletConnect-driven chain switching, or batch calls.
 
 Anyone may deploy a counterfactual account, but deployment grants no authority. Racing `createAccount(identity)` cannot install an attacker's key.
 
-Each account consumes a strictly increasing Google nonce during validation. If two Google logins carry the same one-second `iat`, only the first can authorize a device; the SDK asks the loser to sign in again for a fresh authorization.
+Each account consumes a strictly increasing Google nonce during validation. If two Google logins carry the same one-second `iat`, only the first can authorize or revoke a device; the SDK asks the loser to sign in again for a fresh authorization.
 
 ### Google key rotation
 
@@ -132,20 +154,20 @@ Google's signing keys are not manually administered. The scheduled Chainlink CRE
 
 | Path                                    | Purpose                                                                  |
 | --------------------------------------- | ------------------------------------------------------------------------ |
-| `apps/demo-a`                           | Primary React/Vite onboarding, transaction, device, and audience demo    |
-| `apps/demo-b`                           | Dual-Sepolia independent-origin recovery and WalletConnect web wallet    |
+| `apps/demo-a`                           | Google OAuth client, passkey authorization manager, and device dashboard |
+| `apps/demo-b`                           | Dual-Sepolia passkey wallet that redirects to Demo A for authorization   |
 | `packages/sdk`                          | Browser auth/proving, passkeys, account helpers, and ERC-4337 client     |
 | `circuits/google_jwt`                   | Noir JWT/RS256 authorization circuit and generated artifacts             |
 | `contracts/src`                         | Account, factory, policy validator, key registry, and generated verifier |
 | `contracts/test`                        | Foundry policy tests plus real-proof verifier fixtures                   |
 | `cre/google-jwks`                       | Scheduled Chainlink CRE Google JWKS consensus workflow                   |
-| `deployments/base-sepolia-current.json` | Current ERC-1271/WalletKit-compatible Base Sepolia deployment metadata   |
-| `deployments/ethereum-sepolia.json`     | Current ERC-1271/WalletKit-compatible Ethereum Sepolia deployment        |
-| `deployments/base-sepolia.json`         | Legacy, current-artifact-incompatible Base Sepolia deployment metadata   |
+| `deployments/base-sepolia-current.json` | Current Base Sepolia deployment metadata                                 |
+| `deployments/ethereum-sepolia.json`     | Current Ethereum Sepolia deployment metadata                             |
+| `deployments/base-sepolia.json`         | Historical pre-WebAuthn Base Sepolia deployment metadata                 |
 
 ## Deploy the current contract stack
 
-The ERC-1271 account bytecode changes every counterfactual account address, so the wallet-enabled demos require a fresh factory. The deployment script simulates by default and broadcasts only when `--broadcast` is explicitly supplied.
+The native-WebAuthn account bytecode changes every counterfactual account address, so the demos require a fresh factory. The deployment script simulates by default and broadcasts only when `--broadcast` is explicitly supplied.
 
 ```sh
 export ENTRY_POINT=0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108
@@ -160,29 +182,27 @@ forge script contracts/script/Deploy.s.sol:Deploy --rpc-url https://sepolia.base
 forge script contracts/script/Deploy.s.sol:Deploy --rpc-url "$BASE_SEPOLIA_RPC_URL" --account your-keystore --sender 0x... --broadcast -vvv
 ```
 
-The current deployment was broadcast at Base Sepolia block `45965274`:
+The current deployment was broadcast at Base Sepolia block `45974182`:
 
 | Contract                | Current address                                                                                                                 |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| GoogleAccountFactory    | [`0xfFc6dFC1218bf0AA8B759c543DF2F81eF07A34B0`](https://sepolia.basescan.org/address/0xfFc6dFC1218bf0AA8B759c543DF2F81eF07A34B0) |
-| GoogleJWTValidator      | [`0xDaDBB1130aE516E36Fe7021111462BFE630e98fb`](https://sepolia.basescan.org/address/0xDaDBB1130aE516E36Fe7021111462BFE630e98fb) |
-| GeneratedGoogleVerifier | [`0x0370D2FE5b1d42f00Fac4132Fd8606607Ccc55d7`](https://sepolia.basescan.org/address/0x0370D2FE5b1d42f00Fac4132Fd8606607Ccc55d7) |
-| GoogleKeyRegistry       | [`0x6722F177B0E58A94f7B937B8319d6EBA300e16fA`](https://sepolia.basescan.org/address/0x6722F177B0E58A94f7B937B8319d6EBA300e16fA) |
+| GoogleAccountFactory    | [`0x8E0680C25dfbcCEa7CaD7F6Ad19A20B13bD76b26`](https://sepolia.basescan.org/address/0x8E0680C25dfbcCEa7CaD7F6Ad19A20B13bD76b26) |
+| GoogleJWTValidator      | [`0x055A6F52923CdCec9EE0C9386d85E644b48a697E`](https://sepolia.basescan.org/address/0x055A6F52923CdCec9EE0C9386d85E644b48a697E) |
+| GeneratedGoogleVerifier | [`0xF0F4815Aafbd260F9659EA4B72305F66088c0c06`](https://sepolia.basescan.org/address/0xF0F4815Aafbd260F9659EA4B72305F66088c0c06) |
+| GoogleKeyRegistry       | [`0xed5cD1cF67D343D7c0D3908Ad6230D3a9D036B1B`](https://sepolia.basescan.org/address/0xed5cD1cF67D343D7c0D3908Ad6230D3a9D036B1B) |
 
-The CRE workflow simulation fetched and encoded four Google signing keys. A dry-run simulation does not mutate the registry, but running the simulator with `--broadcast` published those four key commitments through the configured Base Sepolia mock forwarder. The current registry therefore supports Google bootstrap transactions without CRE workflow deployment access. This is a testnet simulation setup, not a production DON deployment. See `deployments/base-sepolia-current.json` for deployment transaction hashes and simulation hashes.
-
-The Ethereum Sepolia deployment was broadcast at block `11567335`:
+The Ethereum Sepolia deployment was broadcast at block `11568525`:
 
 | Contract                | Current address                                                                                                                 |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| GoogleAccountFactory    | [`0x277A014915F95d6f83323435f6822A11DB1a2Cbb`](https://sepolia.etherscan.io/address/0x277A014915F95d6f83323435f6822A11DB1a2Cbb) |
-| GoogleJWTValidator      | [`0x3a1fcFfBa1Ec75c6389b2eB729Cd7B42A6f4C21B`](https://sepolia.etherscan.io/address/0x3a1fcFfBa1Ec75c6389b2eB729Cd7B42A6f4C21B) |
-| GeneratedGoogleVerifier | [`0x534837ce36F46b664A0155D00E79C58B8868F3B0`](https://sepolia.etherscan.io/address/0x534837ce36F46b664A0155D00E79C58B8868F3B0) |
-| GoogleKeyRegistry       | [`0xE95dc39142c5043c7f3Dc530C899Cb9b62910bE2`](https://sepolia.etherscan.io/address/0xE95dc39142c5043c7f3Dc530C899Cb9b62910bE2) |
+| GoogleAccountFactory    | [`0xe60D88bc66FF43700c6Ddf9cB32a03f9976073f6`](https://sepolia.etherscan.io/address/0xe60D88bc66FF43700c6Ddf9cB32a03f9976073f6) |
+| GoogleJWTValidator      | [`0xcf2e0762d57c2Be4939A1ee53Cffd9B6828696Cf`](https://sepolia.etherscan.io/address/0xcf2e0762d57c2Be4939A1ee53Cffd9B6828696Cf) |
+| GeneratedGoogleVerifier | [`0x36b51979aEAa808DF237c4b1E473a41D27D5b0a1`](https://sepolia.etherscan.io/address/0x36b51979aEAa808DF237c4b1E473a41D27D5b0a1) |
+| GoogleKeyRegistry       | [`0x0b899fBB2A88427874bE7Df6a2664c912d8baC6A`](https://sepolia.etherscan.io/address/0x0b899fBB2A88427874bE7Df6a2664c912d8baC6A) |
 
-The Ethereum Sepolia registry contains the same four Google key commitments, published by the local CRE simulator through the official mock forwarder. Full addresses and transaction hashes are recorded in `deployments/ethereum-sepolia.json`.
+Both `GoogleKeyRegistry` contracts were populated with four Google signing keys via `cre workflow simulate --broadcast` against the CRE tenant's mock Keystone forwarder on each chain. This is a testnet simulation, not a production DON-attested report. Full addresses and simulation metadata are recorded in `deployments/base-sepolia-current.json` and `deployments/ethereum-sepolia.json`.
 
-For a future deployment, record the emitted addresses after broadcast, set the new factory in both demos, configure the CRE workflow for the new registry, and populate the registry before attempting Google bootstrap. Never commit the deployer key or live OAuth credentials.
+For a future redeployment, record the emitted addresses after broadcast, set the new factory in both demos, configure the CRE workflow for the new registry, and populate the registry before attempting Google bootstrap. Never commit the deployer key or live OAuth credentials.
 
 ## Legacy Base Sepolia deployment
 
@@ -210,6 +230,7 @@ npm run circuit:generate-verifier
 npm run circuit:test-bbjs
 npm run sdk:test
 npm test -w @zkaccount/demo-b
+npm run check:p256
 npm run typecheck
 npm ci --prefix cre/google-jwks
 npm run typecheck:cre
@@ -232,6 +253,7 @@ The circuit intentionally accepts a constrained MVP subset: compact JSON claims,
 - There is no paymaster. The counterfactual account must hold the selected network's Sepolia ETH before its first UserOperation.
 - The registry starts empty and accepts bootstrap proofs only after a successful authenticated CRE report. Google key rotation can briefly precede the next scheduled six-hour update.
 - Cross-origin isolation enables threaded browser proving. Production hosts must send `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`; otherwise bb.js falls back to one thread.
+- Native device and ERC-1271 signatures require an ES256-capable authenticator and a chain exposing the EIP-7951/RIP-7212 P-256 precompile at `0x100`; there is no Solidity verification fallback.
 
 The next milestone is a recorded live portability run across both demo origins, followed by further verifier and proving-performance optimization.
 

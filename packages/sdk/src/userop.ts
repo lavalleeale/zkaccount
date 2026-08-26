@@ -14,12 +14,13 @@ import {
   type Hex,
 } from "viem";
 import { baseSepolia } from "viem/chains";
-import type { DeviceKey } from "./account";
+import { signWithPasskey, type DeviceKey, type PublicDeviceKey } from "./account";
+import { GOOGLE_ACTION_ADD_DEVICE, GOOGLE_ACTION_REMOVE_DEVICE } from "./google";
 import type { GoogleProof } from "./prover";
 
 export const BASE_SEPOLIA_CHAIN_ID = 84_532;
 export const ENTRY_POINT_V08 = getAddress("0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108");
-export const BASE_SEPOLIA_FACTORY_DEPLOYMENT_BLOCK = 45_965_274n;
+export const BASE_SEPOLIA_FACTORY_DEPLOYMENT_BLOCK = 45_974_182n;
 
 const factoryAbi = parseAbi([
   "function createAccount(bytes32 identity) returns (address account)",
@@ -27,14 +28,11 @@ const factoryAbi = parseAbi([
 ]);
 const accountAbi = parseAbi([
   "function execute(address target, uint256 value, bytes data)",
-  "function addDevice(address device)",
+  "function addDevice(address device, bytes32 qx, bytes32 qy, string rpId)",
   "function removeDevice(address device)",
-  "function addAudience(string clientId)",
-  "function removeAudience(string clientId)",
   "function deviceKeys(address device) view returns (bool)",
-  "function allowedAudiences(bytes32 audience) view returns (bool)",
   "function googleNonce() view returns (uint64)",
-  "event AudienceSet(bytes32 indexed audience, string clientId, bool enabled)",
+  "event DeviceSet(address indexed device, bool enabled, string rpId)",
 ]);
 const entryPointAbi = [
   {
@@ -206,9 +204,8 @@ export interface Google4337ClientOptions {
   factoryDeploymentBlock?: bigint;
 }
 
-export interface AuthorizedClientId {
-  audienceHash: Hex;
-  clientId: string;
+export interface AuthorizedDevice extends PublicDeviceKey {
+  enabled: boolean;
 }
 
 export interface SubmissionResult {
@@ -296,38 +293,27 @@ export class Google4337Client {
     return this.publicClient.getBalance({ address: account });
   }
 
-  async isAudienceAllowed(account: Address, clientId: string): Promise<boolean> {
-    if (!(await this.isDeployed(account))) return false;
-    return this.publicClient.readContract({
-      address: account,
-      abi: accountAbi,
-      functionName: "allowedAudiences",
-      args: [await hashGoogleAudience(clientId)],
-    });
-  }
-
-  async listAuthorizedClientIds(account: Address): Promise<AuthorizedClientId[]> {
+  async listAuthorizedDevices(account: Address): Promise<AuthorizedDevice[]> {
     if (!(await this.isDeployed(account))) return [];
     const logs = await this.publicClient.getContractEvents({
       address: account,
       abi: accountAbi,
-      eventName: "AudienceSet",
+      eventName: "DeviceSet",
       fromBlock: this.factoryDeploymentBlock,
       toBlock: "latest",
       strict: true,
     });
-    const events: AudienceSetRecord[] = [];
+    const events: Array<{ device: Address; enabled: boolean; rpId: string }> = [];
     for (const log of logs) {
-      const { audience, clientId, enabled } = log.args;
-      if ((await hashGoogleAudience(clientId)).toLowerCase() !== audience.toLowerCase()) continue;
-      events.push({ audienceHash: audience, clientId, enabled });
+      const { device, enabled, rpId } = log.args;
+      events.push({ device, enabled, rpId });
     }
-    return reduceAuthorizedClientIds(events);
+    return reduceAuthorizedDevices(events);
   }
 
   async authorizeDevice(
     proof: GoogleProof,
-    device: DeviceKey,
+    device: PublicDeviceKey,
     onStatus: StatusCallback = () => undefined,
   ): Promise<SubmissionResult> {
     const proofGoogleNonce = validateProofContext(
@@ -335,6 +321,7 @@ export class Google4337Client {
       device.address,
       this.factory,
       this.chain.id,
+      GOOGLE_ACTION_ADD_DEVICE,
     );
     const accountAddress = await this.getAccountAddress(proof.publicInputs[0]);
     onStatus(`Smart account predicted: ${accountAddress}`);
@@ -353,7 +340,7 @@ export class Google4337Client {
       onStatus("Checking bundler compatibility");
       await this.assertBundlerCompatibility();
       onStatus("Creating bootstrap UserOperation");
-      let operation = await this.baseOperation(accountAddress, googleSignature(proof));
+      let operation = await this.baseOperation(accountAddress, googleSignature(proof, device));
       if (!(await this.isDeployed(accountAddress))) {
         operation.factory = this.factory;
         operation.factoryData = encodeFunctionData({
@@ -362,7 +349,7 @@ export class Google4337Client {
           args: [proof.publicInputs[0]],
         });
       }
-      operation.callData = addDeviceCall(accountAddress, device.address);
+      operation.callData = addDeviceCall(accountAddress, device);
       onStatus("Estimating UserOperation gas");
       operation = await this.withGasEstimate(operation);
       onStatus("Submitting UserOperation to bundler");
@@ -403,8 +390,9 @@ export class Google4337Client {
     onStatus("Estimating UserOperation gas");
     operation = await this.withGasEstimate(operation);
     const hash = await this.getUserOperationHash(operation);
-    operation.signature = concat(["0x00", await device.account.sign({ hash })]);
-    onStatus("Submitting device-signed UserOperation");
+    onStatus("Confirm the UserOperation with your passkey");
+    operation.signature = await signWithPasskey(device, hash);
+    onStatus("Submitting passkey-signed UserOperation");
     const userOpHash = await this.bundler.sendUserOperation(operation, this.entryPoint);
     const receipt = await this.bundler.waitForUserOperationReceipt(userOpHash);
     if (!receipt.success)
@@ -413,24 +401,40 @@ export class Google4337Client {
     return { accountAddress, userOpHash, receipt };
   }
 
-  async addAudience(
-    accountAddress: Address,
-    device: DeviceKey,
-    clientId: string,
-    onStatus?: StatusCallback,
+  async revokeDeviceWithGoogle(
+    proof: GoogleProof,
+    device: Address,
+    onStatus: StatusCallback = () => undefined,
   ): Promise<SubmissionResult> {
-    const data = addAudienceCall(clientId);
-    return this.sendTransaction(accountAddress, device, { to: accountAddress, data }, onStatus);
-  }
-
-  async removeAudience(
-    accountAddress: Address,
-    device: DeviceKey,
-    clientId: string,
-    onStatus?: StatusCallback,
-  ): Promise<SubmissionResult> {
-    const data = removeAudienceCall(clientId);
-    return this.sendTransaction(accountAddress, device, { to: accountAddress, data }, onStatus);
+    const proofGoogleNonce = validateProofContext(
+      proof,
+      device,
+      this.factory,
+      this.chain.id,
+      GOOGLE_ACTION_REMOVE_DEVICE,
+    );
+    const accountAddress = await this.getAccountAddress(proof.publicInputs[0]);
+    if (!(await this.isDeviceAuthorized(accountAddress, device)))
+      return { accountAddress, alreadyAuthorized: true };
+    if ((await this.getGoogleNonce(accountAddress)) >= proofGoogleNonce)
+      throw new GoogleLoginRaceError();
+    onStatus("Checking bundler compatibility");
+    await this.assertBundlerCompatibility();
+    let operation = await this.baseOperation(
+      accountAddress,
+      googleSignature(proof, {
+        publicKeyX: `0x${"00".repeat(32)}`,
+        publicKeyY: `0x${"00".repeat(32)}`,
+        rpId: "",
+      }),
+    );
+    operation.callData = removeDeviceCall(accountAddress, device);
+    operation = await this.withGasEstimate(operation);
+    const userOpHash = await this.bundler.sendUserOperation(operation, this.entryPoint);
+    const receipt = await this.bundler.waitForUserOperationReceipt(userOpHash);
+    if (!receipt.success)
+      throw new Error(`Device revocation reverted: ${receipt.receipt.transactionHash}`);
+    return { accountAddress, userOpHash, receipt };
   }
 
   async removeDevice(
@@ -523,8 +527,12 @@ export class Google4337Client {
   }
 }
 
-export function addDeviceCall(account: Address, device: Address): Hex {
-  const inner = encodeFunctionData({ abi: accountAbi, functionName: "addDevice", args: [device] });
+export function addDeviceCall(account: Address, device: PublicDeviceKey): Hex {
+  const inner = encodeFunctionData({
+    abi: accountAbi,
+    functionName: "addDevice",
+    args: [device.address, device.publicKeyX, device.publicKeyY, device.rpId],
+  });
   return encodeFunctionData({
     abi: accountAbi,
     functionName: "execute",
@@ -532,53 +540,61 @@ export function addDeviceCall(account: Address, device: Address): Hex {
   });
 }
 
-export function addAudienceCall(clientId: string): Hex {
-  return encodeFunctionData({ abi: accountAbi, functionName: "addAudience", args: [clientId] });
+export function removeDeviceCall(account: Address, device: Address): Hex {
+  const inner = encodeFunctionData({
+    abi: accountAbi,
+    functionName: "removeDevice",
+    args: [device],
+  });
+  return encodeFunctionData({
+    abi: accountAbi,
+    functionName: "execute",
+    args: [account, 0n, inner],
+  });
 }
 
-export function removeAudienceCall(clientId: string): Hex {
-  return encodeFunctionData({ abi: accountAbi, functionName: "removeAudience", args: [clientId] });
-}
-
-export interface AudienceSetRecord extends AuthorizedClientId {
-  enabled: boolean;
-}
-
-export function reduceAuthorizedClientIds(
-  events: readonly AudienceSetRecord[],
-): AuthorizedClientId[] {
-  const active = new Map<Hex, AuthorizedClientId>();
+export function reduceAuthorizedDevices(
+  events: ReadonlyArray<{ device: Address; enabled: boolean; rpId: string }>,
+): AuthorizedDevice[] {
+  const active = new Map<Address, AuthorizedDevice>();
   for (const event of events) {
-    if (event.enabled) {
-      active.set(event.audienceHash, {
-        audienceHash: event.audienceHash,
-        clientId: event.clientId,
-      });
-    } else {
-      active.delete(event.audienceHash);
+    if (!event.enabled) {
+      active.delete(event.device);
+      continue;
     }
+    active.set(event.device, {
+      address: event.device,
+      enabled: true,
+      rpId: event.rpId,
+      rpIdHash: "0x" as Hex,
+      publicKeyX: "0x" as Hex,
+      publicKeyY: "0x" as Hex,
+    });
   }
-  return [...active.values()].sort((left, right) => left.clientId.localeCompare(right.clientId));
+  return [...active.values()].sort((left, right) => left.rpId.localeCompare(right.rpId));
 }
 
-export function googleSignature(proof: GoogleProof): Hex {
+export function googleSignature(
+  proof: GoogleProof,
+  device: Pick<PublicDeviceKey, "publicKeyX" | "publicKeyY" | "rpId">,
+): Hex {
   const encoded = encodeAbiParameters(
-    [{ type: "bytes" }, { type: "bytes32[]" }],
-    [proof.proof, [...proof.publicInputs]],
+    [
+      { type: "bytes" },
+      { type: "bytes32[]" },
+      { type: "bytes32" },
+      { type: "bytes32" },
+      { type: "string" },
+    ],
+    [proof.proof, [...proof.publicInputs], device.publicKeyX, device.publicKeyY, device.rpId],
   );
   return concat(["0x01", encoded]);
 }
 
-export async function hashGoogleAudience(clientId: string): Promise<Hex> {
-  const digest = new Uint8Array(
-    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(clientId)),
-  );
-  digest[0] = 0;
-  return `0x${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
-}
-
 function dummyDeviceSignature(): Hex {
-  return `0x00${"00".repeat(65)}`;
+  // Deliberately invalid, but generously sized so the bundler's calldata gas
+  // estimate covers the later variable-length WebAuthn assertion.
+  return `0x00${"00".repeat(640)}`;
 }
 
 function validateProofContext(
@@ -586,9 +602,10 @@ function validateProofContext(
   device: Address,
   factory: Address,
   chainId: number,
+  action: number,
 ): bigint {
-  if (proof.publicInputs.length !== 8)
-    throw new Error("Google proof must contain exactly eight public inputs");
+  if (proof.publicInputs.length !== 9)
+    throw new Error("Google proof must contain exactly nine public inputs");
   const proofDevice = getAddress(`0x${proof.publicInputs[2].slice(-40)}`);
   const proofFactory = getAddress(`0x${proof.publicInputs[4].slice(-40)}`);
   if (!isAddressEqual(proofDevice, device))
@@ -597,6 +614,8 @@ function validateProofContext(
     throw new Error("Google proof is bound to a different factory");
   if (hexToBigInt(proof.publicInputs[3]) !== BigInt(chainId))
     throw new Error("Google proof is bound to a different chain");
+  if (hexToBigInt(proof.publicInputs[8]) !== BigInt(action))
+    throw new Error("Google proof is bound to a different action");
   const googleNonce = hexToBigInt(proof.publicInputs[7]);
   if (googleNonce <= 0n || googleNonce > (1n << 64n) - 1n)
     throw new Error("Google proof has an invalid issued-at nonce");

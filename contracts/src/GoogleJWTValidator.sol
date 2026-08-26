@@ -6,15 +6,17 @@ import {GoogleKeyRegistry} from "./GoogleKeyRegistry.sol";
 
 interface IGoogleAccountView {
     function identity() external view returns (bytes32);
-    function allowedAudiences(bytes32 audience) external view returns (bool);
 }
 
 interface IGoogleAccountFactoryView {
     function getAddress(bytes32 identity) external view returns (address);
+    function rootAudience() external view returns (bytes32);
 }
 
 contract GoogleJWTValidator {
-    uint256 public constant PUBLIC_INPUT_COUNT = 8;
+    uint256 public constant PUBLIC_INPUT_COUNT = 9;
+    uint8 public constant ACTION_ADD_DEVICE = 1;
+    uint8 public constant ACTION_REMOVE_DEVICE = 2;
 
     error InvalidPublicInputCount();
     error InvalidProof();
@@ -24,7 +26,8 @@ contract GoogleJWTValidator {
     error WrongFactory();
     error WrongAccount();
     error WrongIdentity();
-    error AudienceNotAllowed();
+    error WrongAudience();
+    error InvalidAction();
     error InvalidDevice();
     error InvalidGoogleNonce();
 
@@ -34,6 +37,7 @@ contract GoogleJWTValidator {
         address deviceKey;
         uint48 validUntil;
         uint64 googleNonce;
+        uint8 action;
     }
 
     IGoogleProofVerifier public immutable verifier;
@@ -72,6 +76,7 @@ contract GoogleJWTValidator {
         auth.validUntil = uint48(validUntil);
         uint256 googleNonce = uint256(publicInputs[7]);
         auth.googleNonce = uint64(googleNonce);
+        uint256 action = uint256(publicInputs[8]);
 
         if (uint256(publicInputs[2]) >> 160 != 0 || auth.deviceKey == address(0)) revert InvalidDevice();
         if (uint256(publicInputs[4]) >> 160 != 0 || address(uint160(uint256(publicInputs[4]))) != factory) {
@@ -80,9 +85,11 @@ contract GoogleJWTValidator {
         if (uint256(publicInputs[3]) != block.chainid) revert WrongChain();
         if (validUntil > type(uint48).max || block.timestamp > validUntil) revert AuthorizationExpired();
         if (googleNonce > type(uint64).max) revert InvalidGoogleNonce();
+        if (action != ACTION_ADD_DEVICE && action != ACTION_REMOVE_DEVICE) revert InvalidAction();
+        auth.action = uint8(action);
         if (!keyRegistry.validKeys(publicInputs[6])) revert InvalidGoogleKey();
         if (IGoogleAccountView(account).identity() != auth.identity) revert WrongIdentity();
         if (IGoogleAccountFactoryView(factory).getAddress(auth.identity) != account) revert WrongAccount();
-        if (!IGoogleAccountView(account).allowedAudiences(auth.audience)) revert AudienceNotAllowed();
+        if (auth.audience != IGoogleAccountFactoryView(factory).rootAudience()) revert WrongAudience();
     }
 }

@@ -2,8 +2,9 @@
 pragma solidity ^0.8.28;
 
 import {IEntryPoint, PackedUserOperation} from "./interfaces/IEntryPoint.sol";
-import {GoogleAudience} from "./GoogleAudience.sol";
 import {GoogleJWTValidator} from "./GoogleJWTValidator.sol";
+import {NativeWebAuthn} from "./NativeWebAuthn.sol";
+import {WebAuthn} from "@openzeppelin/contracts/utils/cryptography/WebAuthn.sol";
 
 contract GoogleAccount {
     uint8 public constant SIGNATURE_DEVICE = 0;
@@ -11,14 +12,11 @@ contract GoogleAccount {
     bytes4 public constant ERC1271_MAGIC_VALUE = 0x1626ba7e;
     bytes4 public constant ERC1271_INVALID_SIGNATURE = 0xffffffff;
     uint256 internal constant SIG_VALIDATION_FAILED = 1;
-    uint256 internal constant SECP256K1N_HALF =
-        0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0;
-
     error OnlyEntryPoint();
     error OnlySelf();
     error CallFailed(bytes reason);
     error InvalidGoogleCallData();
-    error InvalidSignatureEncoding();
+    error InvalidDeviceIdentifier();
     error ZeroAddress();
     error GoogleNonceNotIncreasing(uint64 provided, uint64 current);
 
@@ -27,20 +25,24 @@ contract GoogleAccount {
     GoogleJWTValidator public immutable googleValidator;
     address public immutable factory;
 
-    mapping(address device => bool enabled) public deviceKeys;
-    mapping(bytes32 audience => bool enabled) public allowedAudiences;
+    struct WebAuthnDevice {
+        bytes32 qx;
+        bytes32 qy;
+        bytes32 rpIdHash;
+        bool enabled;
+    }
+
+    mapping(address device => WebAuthnDevice credential) public webAuthnDevices;
     uint64 public googleNonce;
 
-    event DeviceSet(address indexed device, bool enabled);
-    event AudienceSet(bytes32 indexed audience, string clientId, bool enabled);
+    event DeviceSet(address indexed device, bool enabled, string rpId);
     event Executed(address indexed target, uint256 value, bytes data);
 
     constructor(
         bytes32 identity_,
         IEntryPoint entryPoint_,
         GoogleJWTValidator googleValidator_,
-        address factory_,
-        string memory rootClientId
+        address factory_
     ) {
         if (address(entryPoint_) == address(0) || address(googleValidator_) == address(0) || factory_ == address(0)) {
             revert ZeroAddress();
@@ -49,9 +51,6 @@ contract GoogleAccount {
         entryPoint = entryPoint_;
         googleValidator = googleValidator_;
         factory = factory_;
-        bytes32 rootAudience = GoogleAudience.hash(rootClientId);
-        allowedAudiences[rootAudience] = true;
-        emit AudienceSet(rootAudience, rootClientId, true);
     }
 
     receive() external payable {}
@@ -72,50 +71,47 @@ contract GoogleAccount {
         emit Executed(target, value, data);
     }
 
-    /// @notice Validates an offchain signature made by an authorized device key.
+    /// @notice Validates a WebAuthn assertion made by an authorized credential.
     /// @dev The caller supplies the final digest (EIP-191, EIP-712, or another
     /// application-specific digest) as required by ERC-1271.
     function isValidSignature(bytes32 hash, bytes calldata signature) external view returns (bytes4) {
-        address signer = _recoverDeviceSigner(hash, signature);
-        return signer != address(0) && deviceKeys[signer]
-            ? ERC1271_MAGIC_VALUE
-            : ERC1271_INVALID_SIGNATURE;
+        bool valid = signature.length != 0 && uint8(signature[0]) == SIGNATURE_DEVICE
+            && _validateWebAuthn(hash, signature[1:]) == 0;
+        return valid ? ERC1271_MAGIC_VALUE : ERC1271_INVALID_SIGNATURE;
     }
 
-    function addAudience(string calldata clientId) external onlySelf {
-        bytes32 audience = GoogleAudience.hash(clientId);
-        allowedAudiences[audience] = true;
-        emit AudienceSet(audience, clientId, true);
-    }
-
-    function removeAudience(string calldata clientId) external onlySelf {
-        bytes32 audience = GoogleAudience.hash(clientId);
-        allowedAudiences[audience] = false;
-        emit AudienceSet(audience, clientId, false);
-    }
-
-    function addDevice(address device) external onlySelf {
+    function addDevice(address device, bytes32 qx, bytes32 qy, string calldata rpId) external onlySelf {
+        bytes32 rpIdHash = sha256(bytes(rpId));
         if (device == address(0)) revert ZeroAddress();
-        deviceKeys[device] = true;
-        emit DeviceSet(device, true);
+        if (device != deviceIdentifier(qx, qy, rpIdHash)) revert InvalidDeviceIdentifier();
+        webAuthnDevices[device] = WebAuthnDevice(qx, qy, rpIdHash, true);
+        emit DeviceSet(device, true, rpId);
     }
 
     function removeDevice(address device) external onlySelf {
-        deviceKeys[device] = false;
-        emit DeviceSet(device, false);
+        delete webAuthnDevices[device];
+        emit DeviceSet(device, false, "");
     }
 
-    function validateUserOp(
-        PackedUserOperation calldata userOp,
-        bytes32 userOpHash,
-        uint256 missingAccountFunds
-    ) external onlyEntryPoint returns (uint256 validationData) {
+    function deviceKeys(address device) external view returns (bool) {
+        return webAuthnDevices[device].enabled;
+    }
+
+    function deviceIdentifier(bytes32 qx, bytes32 qy, bytes32 rpIdHash) public pure returns (address) {
+        return address(uint160(uint256(keccak256(abi.encodePacked(qx, qy, rpIdHash)))));
+    }
+
+    function validateUserOp(PackedUserOperation calldata userOp, bytes32 userOpHash, uint256 missingAccountFunds)
+        external
+        onlyEntryPoint
+        returns (uint256 validationData)
+    {
         bytes calldata signature = userOp.signature;
         if (signature.length == 0) return SIG_VALIDATION_FAILED;
 
         uint8 mode = uint8(signature[0]);
         if (mode == SIGNATURE_DEVICE) {
-            validationData = _validateDevice(userOpHash, signature[1:]);
+            validationData = _validateWebAuthn(userOpHash, signature[1:]);
         } else if (mode == SIGNATURE_GOOGLE) {
             validationData = _validateGoogle(userOp.callData, signature[1:]);
         } else {
@@ -128,35 +124,37 @@ contract GoogleAccount {
         }
     }
 
-    function _validateDevice(bytes32 userOpHash, bytes calldata signature) internal view returns (uint256) {
-        address signer = _recoverDeviceSigner(userOpHash, signature);
-        return signer != address(0) && deviceKeys[signer] ? 0 : SIG_VALIDATION_FAILED;
-    }
-
-    function _recoverDeviceSigner(bytes32 hash, bytes calldata signature) internal pure returns (address signer) {
-        if (signature.length != 65) return address(0);
-        bytes32 r;
-        bytes32 s;
-        uint8 v;
+    function _validateWebAuthn(bytes32 hash, bytes calldata signature) internal view returns (uint256) {
+        if (signature.length < 32) return SIG_VALIDATION_FAILED;
+        address device;
         assembly ("memory-safe") {
-            r := calldataload(signature.offset)
-            s := calldataload(add(signature.offset, 32))
-            v := byte(0, calldataload(add(signature.offset, 64)))
+            device := calldataload(signature.offset)
         }
-        if (v < 27) v += 27;
-        if (v != 27 && v != 28) return address(0);
-        if (uint256(s) == 0 || uint256(s) > SECP256K1N_HALF) return address(0);
-        return ecrecover(hash, v, r, s);
+        WebAuthnDevice storage credential = webAuthnDevices[device];
+        if (!credential.enabled) return SIG_VALIDATION_FAILED;
+        (bool decoded, WebAuthn.WebAuthnAuth calldata auth) = WebAuthn.tryDecodeAuth(signature[32:]);
+        if (!decoded) return SIG_VALIDATION_FAILED;
+        return NativeWebAuthn.verify(hash, credential.rpIdHash, auth, credential.qx, credential.qy)
+            ? 0
+            : SIG_VALIDATION_FAILED;
     }
 
     function _validateGoogle(bytes calldata callData, bytes calldata encodedAuthorization) internal returns (uint256) {
-        (bytes memory proof, bytes32[] memory publicInputs) = abi.decode(encodedAuthorization, (bytes, bytes32[]));
+        (bytes memory proof, bytes32[] memory publicInputs, bytes32 qx, bytes32 qy, string memory rpId) =
+            abi.decode(encodedAuthorization, (bytes, bytes32[], bytes32, bytes32, string));
         GoogleJWTValidator.GoogleAuthorization memory auth =
             googleValidator.verifyGoogleAuthorization(address(this), proof, publicInputs);
-        if (!_isAddDeviceCall(callData, auth.deviceKey)) revert InvalidGoogleCallData();
+        uint8 actionAddDevice = googleValidator.ACTION_ADD_DEVICE();
+        uint8 actionRemoveDevice = googleValidator.ACTION_REMOVE_DEVICE();
+        if (auth.action == actionAddDevice) {
+            if (!_isAddDeviceCall(callData, auth.deviceKey, qx, qy, rpId)) revert InvalidGoogleCallData();
+        } else if (auth.action == actionRemoveDevice) {
+            if (!_isRemoveDeviceCall(callData, auth.deviceKey, qx, qy, rpId)) revert InvalidGoogleCallData();
+        } else revert InvalidGoogleCallData();
         // An already-installed device needs no second bootstrap. The monotonic
         // Google nonce below permanently rejects the proof even after removal.
-        if (deviceKeys[auth.deviceKey]) return SIG_VALIDATION_FAILED;
+        if (auth.action == actionAddDevice && webAuthnDevices[auth.deviceKey].enabled) return SIG_VALIDATION_FAILED;
+        if (auth.action == actionRemoveDevice && !webAuthnDevices[auth.deviceKey].enabled) return SIG_VALIDATION_FAILED;
         uint64 currentNonce = googleNonce;
         if (auth.googleNonce <= currentNonce) {
             revert GoogleNonceNotIncreasing(auth.googleNonce, currentNonce);
@@ -168,8 +166,22 @@ contract GoogleAccount {
         return _packValidationData(auth.validUntil);
     }
 
-    function _isAddDeviceCall(bytes calldata callData, address device) internal view returns (bool) {
-        bytes memory inner = abi.encodeCall(this.addDevice, (device));
+    function _isAddDeviceCall(bytes calldata callData, address device, bytes32 qx, bytes32 qy, string memory rpId)
+        internal
+        view
+        returns (bool)
+    {
+        if (device != deviceIdentifier(qx, qy, sha256(bytes(rpId)))) return false;
+        bytes memory inner = abi.encodeCall(this.addDevice, (device, qx, qy, rpId));
+        bytes memory expected = abi.encodeCall(this.execute, (address(this), 0, inner));
+        return keccak256(callData) == keccak256(expected);
+    }
+
+    function _isRemoveDeviceCall(bytes calldata callData, address device, bytes32 qx, bytes32 qy, string memory rpId)
+        internal view returns (bool)
+    {
+        if (qx != bytes32(0) || qy != bytes32(0) || bytes(rpId).length != 0) return false;
+        bytes memory inner = abi.encodeCall(this.removeDevice, (device));
         bytes memory expected = abi.encodeCall(this.execute, (address(this), 0, inner));
         return keccak256(callData) == keccak256(expected);
     }

@@ -42,7 +42,7 @@ contract GoogleAccountFactory {
         if (address(validator) == address(0)) revert ValidatorNotSet();
         address predicted = getAddress(identity);
         if (predicted.code.length != 0) return GoogleAccount(payable(predicted));
-        account = new GoogleAccount{salt: identity}(identity, entryPoint, validator, address(this), rootClientId);
+        account = new GoogleAccount{salt: identity}(identity, entryPoint, validator, address(this));
         emit AccountCreated(identity, address(account));
     }
 
@@ -51,7 +51,7 @@ contract GoogleAccountFactory {
         if (address(validator) == address(0)) revert ValidatorNotSet();
         bytes memory bytecode = abi.encodePacked(
             type(GoogleAccount).creationCode,
-            abi.encode(identity, entryPoint, validator, address(this), rootClientId)
+            abi.encode(identity, entryPoint, validator, address(this))
         );
         bytes32 hash = keccak256(abi.encodePacked(bytes1(0xff), address(this), identity, keccak256(bytecode)));
         return address(uint160(uint256(hash)));

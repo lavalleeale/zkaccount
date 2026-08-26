@@ -9,7 +9,12 @@ import {
 } from "viem";
 import type { DeviceKey } from "./account";
 
-const LOGIN_DOMAIN = "GOOGLE_4337_LOGIN_V1";
+const LOGIN_DOMAIN = "GOOGLE_4337_LOGIN_V2";
+export const GOOGLE_ACTION_VIEW = 0;
+export const GOOGLE_ACTION_ADD_DEVICE = 1;
+export const GOOGLE_ACTION_REMOVE_DEVICE = 2;
+export type GoogleAuthorizationAction =
+  typeof GOOGLE_ACTION_VIEW | typeof GOOGLE_ACTION_ADD_DEVICE | typeof GOOGLE_ACTION_REMOVE_DEVICE;
 
 export interface LoginChallenge {
   deviceAddress: Address;
@@ -17,6 +22,7 @@ export interface LoginChallenge {
   proofExpiry: number;
   chainId: number;
   factory: Address;
+  action: GoogleAuthorizationAction;
   nonce: Hex;
 }
 
@@ -42,6 +48,7 @@ export interface GoogleLoginOptions {
   factory: Address;
   button: HTMLElement;
   device: DeviceKey;
+  action?: GoogleAuthorizationAction;
 }
 
 declare global {
@@ -67,6 +74,7 @@ export async function createLoginChallenge(
   chainId: number,
   factory: Address,
   deviceAddress: Address,
+  action: GoogleAuthorizationAction = GOOGLE_ACTION_ADD_DEVICE,
   nowSeconds = Math.floor(Date.now() / 1000),
 ): Promise<LoginChallenge> {
   const randomness = crypto.getRandomValues(new Uint8Array(32));
@@ -79,6 +87,7 @@ export async function createLoginChallenge(
     factory,
     deviceAddress,
     numberToHex(proofExpiry, { size: 8 }),
+    numberToHex(action, { size: 1 }),
     bytesToHex(randomness),
   ]);
   const digestInput = new Uint8Array(hexToBytes(preimage));
@@ -89,6 +98,7 @@ export async function createLoginChallenge(
     proofExpiry,
     chainId,
     factory,
+    action,
     nonce: bytesToHex(new Uint8Array(digest)),
   };
 }
@@ -98,6 +108,7 @@ export async function loginWithGoogle(options: GoogleLoginOptions): Promise<Goog
     options.chainId,
     options.factory,
     options.device.address,
+    options.action ?? GOOGLE_ACTION_ADD_DEVICE,
   );
 
   const google = await waitForGoogleIdentityServices();

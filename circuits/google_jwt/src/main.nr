@@ -18,6 +18,7 @@ fn main(
     chain_id_bytes: [u8; 32],
     factory_address_bytes: [u8; 20],
     valid_until_bytes: [u8; 8],
+    action_bytes: [u8; 1],
     header: [u8; MAX_HEADER],
     header_len: u32,
     payload: [u8; MAX_PAYLOAD],
@@ -40,7 +41,7 @@ fn main(
     modulus_limbs: [u128; 18],
     redc_limbs: [u128; 18],
     signature_limbs: [u128; 18],
-) -> pub [Field; 8] {
+) -> pub [Field; 9] {
     assert(header_len <= MAX_HEADER);
     assert(payload_len <= MAX_PAYLOAD);
     assert((audience_len > 0) & (audience_len <= MAX_AUDIENCE));
@@ -61,11 +62,14 @@ fn main(
     let chain_id = bytes_to_field(chain_id_bytes);
     let factory_address = bytes_to_field(factory_address_bytes);
     let valid_until = bytes_to_field(valid_until_bytes);
+    let action = bytes_to_field(action_bytes);
+    assert((action == 1) | (action == 2));
     let nonce_digest = login_nonce(
         chain_id_bytes,
         factory_address_bytes,
         device_address_bytes,
         valid_until_bytes,
+        action_bytes,
         login_randomness,
     );
     assert_nonce_claim(payload, payload_len, nonce_offset, nonce_digest);
@@ -120,6 +124,7 @@ fn main(
         valid_until,
         computed_google_key_hash,
         jwt_iat as Field,
+        action,
     ]
 }
 
@@ -198,16 +203,18 @@ fn login_nonce(
     factory_bytes: [u8; 20],
     device_bytes: [u8; 20],
     expiry_bytes: [u8; 8],
+    action_bytes: [u8; 1],
     randomness: [u8; 32],
 ) -> [u8; 32] {
-    let domain: [u8; 20] = [71, 79, 79, 71, 76, 69, 95, 52, 51, 51, 55, 95, 76, 79, 71, 73, 78, 95, 86, 49];
-    let mut preimage: [u8; 132] = [0; 132];
+    let domain: [u8; 20] = [71, 79, 79, 71, 76, 69, 95, 52, 51, 51, 55, 95, 76, 79, 71, 73, 78, 95, 86, 50];
+    let mut preimage: [u8; 133] = [0; 133];
     for i in 0..20 { preimage[i] = domain[i]; }
     for i in 0..32 { preimage[20 + i] = chain_bytes[i]; }
     for i in 0..20 { preimage[52 + i] = factory_bytes[i]; }
     for i in 0..20 { preimage[72 + i] = device_bytes[i]; }
     for i in 0..8 { preimage[92 + i] = expiry_bytes[i]; }
-    for i in 0..32 { preimage[100 + i] = randomness[i]; }
+    preimage[100] = action_bytes[0];
+    for i in 0..32 { preimage[101 + i] = randomness[i]; }
     sha256::digest(preimage)
 }
 

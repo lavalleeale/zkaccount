@@ -84,7 +84,7 @@ export class DemoBWalletConnectController {
 
   async approveProposal(prompt: SessionProposalPrompt): Promise<void> {
     this.assertActive(prompt);
-    if (!this.account) throw new Error("Unlock or recover the smart account before connecting");
+    if (!this.account) throw new Error("Load or recover the smart account before connecting");
     const proposal = prompt.event.params;
     const namespaces = buildApprovedNamespaces({
       proposal,

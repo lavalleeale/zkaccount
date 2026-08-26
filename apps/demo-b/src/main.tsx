@@ -1,18 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { formatEther, type Address } from "viem";
+import { formatEther, isAddressEqual, type Address } from "viem";
 import { baseSepolia, sepolia } from "viem/chains";
 import {
   Google4337Client,
+  createPasskeyAuthorizationUrl,
   createPasskeyDeviceKey,
-  googleIdentityCommitment,
-  loginWithGoogle,
-  proveGoogleAuthorization,
-  unlockPasskeyDeviceKey,
-  warmGoogleProver,
+  loadPasskeyDeviceKey,
+  parsePasskeyAuthorizationResult,
   type DeviceKey,
-  type GoogleLoginResult,
-  type GoogleProof,
+  type PasskeyAuthorizationResult,
 } from "@zkaccount/sdk";
 import {
   createWalletConnectController,
@@ -32,7 +29,8 @@ import {
 import "../../demo-a/src/style.css";
 import "./wallet.css";
 
-const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
+const managerUrl = import.meta.env.VITE_PASSKEY_MANAGER_URL as string | undefined;
+const PENDING_KEY = "zkaccount.demo-b.pending-authorization.v1";
 const NETWORK_KEY = "zkaccount.selected-network";
 const networks = {
   "base-sepolia": {
@@ -42,7 +40,7 @@ const networks = {
     rpcUrl: (import.meta.env.VITE_BASE_SEPOLIA_RPC_URL ?? "https://sepolia.base.org") as string,
     bundlerUrl: (import.meta.env.VITE_BASE_SEPOLIA_BUNDLER_URL ??
       import.meta.env.VITE_BUNDLER_URL) as string | undefined,
-    factoryDeploymentBlock: 45_965_274n,
+    factoryDeploymentBlock: 45_974_182n,
   },
   "ethereum-sepolia": {
     chain: sepolia,
@@ -65,8 +63,36 @@ const { factory, rpcUrl, bundlerUrl } = network;
 const reownProjectId = import.meta.env.VITE_REOWN_PROJECT_ID as string | undefined;
 const passkeyOptions = { scope: "demo-b", displayName: "zkAccount Demo B" };
 
+interface PendingAuthorization {
+  state: string;
+  chainId: number;
+  device: DeviceKey;
+}
+
+function savePendingAuthorization(pending: PendingAuthorization): void {
+  window.sessionStorage.setItem(PENDING_KEY, JSON.stringify(pending));
+}
+
+function takePendingAuthorization(): PendingAuthorization | undefined {
+  const raw = window.sessionStorage.getItem(PENDING_KEY);
+  window.sessionStorage.removeItem(PENDING_KEY);
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as Partial<PendingAuthorization>;
+    if (typeof parsed.state !== "string" || typeof parsed.chainId !== "number" || !parsed.device) {
+      return undefined;
+    }
+    return {
+      state: parsed.state,
+      chainId: parsed.chainId,
+      device: loadPasskeyDeviceKey(parsed.device),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function App() {
-  const googleButton = useRef<HTMLDivElement>(null);
   const walletConnect = useRef<DemoBWalletConnectController | undefined>(undefined);
   const wallet = useMemo(
     () =>
@@ -87,11 +113,11 @@ function App() {
   );
   const [stored, setStored] = useState<StoredWalletState | undefined>(initialStored);
   const [status, setStatus] = useState(
-    initialStored ? "Known smart account is locked. Unlock its passkey to continue." : "Ready",
+    initialStored
+      ? "Known smart account is ready. Confirm each signature with its passkey."
+      : "Ready",
   );
-  const [login, setLogin] = useState<GoogleLoginResult>();
-  const [proof, setProof] = useState<GoogleProof>();
-  const [device, setDevice] = useState<DeviceKey>();
+  const [device, setDevice] = useState<DeviceKey | undefined>(initialStored?.device);
   const [account, setAccount] = useState<Address | undefined>(initialStored?.account);
   const [balance, setBalance] = useState(0n);
   const [authorized, setAuthorized] = useState(false);
@@ -103,6 +129,78 @@ function App() {
     Array<{ topic: string; peer: { name: string; url: string } }>
   >([]);
   const [walletConnectReady, setWalletConnectReady] = useState(false);
+
+  async function handleAuthorizationResult(
+    result: PasskeyAuthorizationResult,
+    pending: PendingAuthorization | undefined,
+  ) {
+    if (!pending || pending.state !== result.state) {
+      setStatus("This passkey authorization result is missing, expired, or was already used.");
+      return;
+    }
+    if (result.chainId !== pending.chainId) {
+      setStatus("This passkey authorization result is for a different network.");
+      return;
+    }
+    if (result.status === "rejected") {
+      setStatus("Passkey authorization was rejected.");
+      return;
+    }
+    if (
+      result.status !== "approved" ||
+      !result.account ||
+      !result.device ||
+      !isAddressEqual(result.device, pending.device.address)
+    ) {
+      setStatus(
+        result.status === "failed" && result.error
+          ? `Passkey authorization failed: ${result.error}`
+          : "Passkey authorization failed.",
+      );
+      return;
+    }
+    if (!wallet || !factory) {
+      setStatus("Set VITE_ACCOUNT_FACTORY first");
+      return;
+    }
+    setBusy(true);
+    try {
+      setStatus("Verifying on-chain authorization");
+      const isAuthorized = await wallet.isDeviceAuthorized(result.account, pending.device.address);
+      if (!isAuthorized) {
+        throw new Error(
+          "The passkey manager reported success, but the device is not authorized onchain",
+        );
+      }
+      setDevice(pending.device);
+      setAccount(result.account);
+      setAuthorized(true);
+      setStored(
+        saveWalletState(
+          window.localStorage,
+          factory,
+          result.account,
+          pending.chainId,
+          pending.device,
+        ),
+      );
+      setBalance(await wallet.getBalance(result.account));
+      setStatus("Wallet ready. Your passkey will be requested for each signature.");
+    } catch (error) {
+      setStatus(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    const result = parsePasskeyAuthorizationResult(window.location.search);
+    if (!result) return;
+    window.history.replaceState(null, "", window.location.pathname);
+    const pending = takePendingAuthorization();
+    queueMicrotask(() => void handleAuthorizationResult(result, pending));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!reownProjectId) return;
@@ -141,36 +239,32 @@ function App() {
 
   useEffect(() => walletConnect.current?.setAccount(account), [account]);
 
-  async function loadPasskey(create: boolean) {
+  async function loadStoredWallet() {
+    if (!stored || !wallet) {
+      setStatus("No stored wallet was found; create a passkey to get started");
+      return;
+    }
     setBusy(true);
-    setStatus(create ? "Creating Demo B passkey" : "Unlocking Demo B passkey");
+    setStatus("Loading stored passkey metadata");
     try {
-      const nextDevice = create
-        ? await createPasskeyDeviceKey(passkeyOptions)
-        : await unlockPasskeyDeviceKey(passkeyOptions);
+      const nextDevice = loadPasskeyDeviceKey(stored.device);
       setDevice(nextDevice);
-      setLogin(undefined);
-      setProof(undefined);
-
-      if (!create && stored && wallet) {
-        setStatus("Checking the stored smart account authorization");
-        const stillAuthorized = await wallet.isDeviceAuthorized(stored.account, nextDevice.address);
-        if (stillAuthorized) {
-          setAccount(stored.account);
-          setAuthorized(true);
-          setBalance(await wallet.getBalance(stored.account));
-          setStatus("Wallet unlocked. Review any pending dapp request.");
-          return;
-        }
-        clearWalletState(window.localStorage, network.chain.id);
-        setStored(undefined);
-        setStatus("This passkey is no longer authorized. Recover the account with Google.");
+      setStatus("Checking the stored smart account authorization");
+      const stillAuthorized = await wallet.isDeviceAuthorized(stored.account, nextDevice.address);
+      if (stillAuthorized) {
+        setAccount(stored.account);
+        setAuthorized(true);
+        setBalance(await wallet.getBalance(stored.account));
+        setStatus("Wallet ready. Your passkey will be requested for each signature.");
+        return;
       }
-
+      clearWalletState(window.localStorage, network.chain.id);
+      setStored(undefined);
       setAccount(undefined);
-      setBalance(0n);
       setAuthorized(false);
-      await start(nextDevice);
+      setStatus(
+        "This passkey is no longer authorized. Create a new passkey to recover the account.",
+      );
     } catch (error) {
       setStatus(errorMessage(error));
     } finally {
@@ -178,11 +272,35 @@ function App() {
     }
   }
 
-  async function refresh(address = account, localDevice = device) {
-    if (!wallet || !address || !localDevice) return;
+  async function createPasskeyAndAuthorize() {
+    if (!managerUrl) {
+      setStatus("Set VITE_PASSKEY_MANAGER_URL to the passkey manager's origin first");
+      return;
+    }
+    setBusy(true);
+    setStatus("Creating Demo B passkey");
+    try {
+      const newDevice = await createPasskeyDeviceKey(passkeyOptions);
+      const { url, state } = createPasskeyAuthorizationUrl({
+        managerUrl,
+        callback: `${window.location.origin}/`,
+        chainId: network.chain.id,
+        device: newDevice,
+      });
+      savePendingAuthorization({ state, chainId: network.chain.id, device: newDevice });
+      setStatus("Redirecting to the passkey manager for Google authorization");
+      window.location.href = url.toString();
+    } catch (error) {
+      setStatus(errorMessage(error));
+      setBusy(false);
+    }
+  }
+
+  async function refresh() {
+    if (!wallet || !account || !device) return;
     const [nextBalance, nextAuthorized] = await Promise.all([
-      wallet.getBalance(address),
-      wallet.isDeviceAuthorized(address, localDevice.address),
+      wallet.getBalance(account),
+      wallet.isDeviceAuthorized(account, device.address),
     ]);
     setBalance(nextBalance);
     setAuthorized(nextAuthorized);
@@ -190,77 +308,7 @@ function App() {
       clearWalletState(window.localStorage, network.chain.id);
       setStored(undefined);
     }
-    setStatus(
-      nextAuthorized ? "Wallet is unlocked and ready" : "This device needs Google authorization",
-    );
-  }
-
-  async function start(localDevice: DeviceKey) {
-    if (!googleButton.current || !clientId || !factory || !wallet) {
-      setStatus("Set VITE_GOOGLE_CLIENT_ID and VITE_ACCOUNT_FACTORY first");
-      return;
-    }
-    setAccount(undefined);
-    setBalance(0n);
-    setProof(undefined);
-    setAuthorized(false);
-    setStatus("Authenticating with Google");
-    try {
-      const result = await loginWithGoogle({
-        clientId,
-        factory,
-        chainId: network.chain.id,
-        button: googleButton.current,
-        device: localDevice,
-      });
-      setLogin(result);
-      setDevice(result.device);
-      setStatus("Resolving the portable smart account");
-      const identity = await googleIdentityCommitment(result.claims);
-      const predicted = await wallet.getAccountAddress(identity);
-      const [nextBalance, nextAuthorized] = await Promise.all([
-        wallet.getBalance(predicted),
-        wallet.isDeviceAuthorized(predicted, result.device.address),
-      ]);
-      setAccount(predicted);
-      setBalance(nextBalance);
-      setAuthorized(nextAuthorized);
-      if (nextAuthorized) {
-        persistAccount(predicted);
-        setStatus("Wallet recovered and unlocked. Review any pending dapp request.");
-        return;
-      }
-      setStatus("Device authorization is required. Warming up the prover");
-      await warmGoogleProver();
-      setStatus("Generating proof in this independent origin");
-      const generatedProof = await proveGoogleAuthorization(result);
-      setProof(generatedProof);
-      setStatus(
-        bundlerUrl
-          ? `Authorize this passkey on ${predicted} before using it as a wallet.`
-          : "Configure VITE_BUNDLER_URL to submit the authorization UserOperation.",
-      );
-    } catch (error) {
-      setStatus(errorMessage(error));
-    }
-  }
-
-  async function authorizeDevice() {
-    if (!wallet || !proof || !device || !bundlerUrl) {
-      setStatus("A proof and VITE_BUNDLER_URL are required");
-      return;
-    }
-    setBusy(true);
-    try {
-      const result = await wallet.authorizeDevice(proof, device, setStatus);
-      setAccount(result.accountAddress);
-      persistAccount(result.accountAddress);
-      await refresh(result.accountAddress, device);
-    } catch (error) {
-      setStatus(errorMessage(error));
-    } finally {
-      setBusy(false);
-    }
+    setStatus(nextAuthorized ? "Wallet is ready" : "This device needs to be re-authorized");
   }
 
   async function pair() {
@@ -280,7 +328,7 @@ function App() {
 
   async function approveProposal(activePrompt: SessionProposalPrompt) {
     if (!authorized) {
-      setStatus("Unlock and authorize the passkey before connecting");
+      setStatus("Load and authorize the passkey before connecting");
       return;
     }
     setBusy(true);
@@ -308,7 +356,7 @@ function App() {
 
   async function approveRequest(activePrompt: SessionRequestPrompt) {
     if (!wallet || !account || !device || !authorized || !walletConnect.current) {
-      setStatus("Unlock the authorized passkey before approving this request");
+      setStatus("Load the authorized passkey before approving this request");
       return;
     }
     setBusy(true);
@@ -353,9 +401,9 @@ function App() {
     setBusy(true);
     try {
       await wallet.removeDevice(account, device, device.address, setStatus);
-      const sessions = walletConnect.current?.sessions() ?? [];
+      const activeSessions = walletConnect.current?.sessions() ?? [];
       await Promise.all(
-        sessions.map((session) => walletConnect.current?.disconnect(session.topic)),
+        activeSessions.map((session) => walletConnect.current?.disconnect(session.topic)),
       );
       clearWalletState(window.localStorage, network.chain.id);
       setStored(undefined);
@@ -369,16 +417,13 @@ function App() {
     }
   }
 
-  function persistAccount(address: Address) {
-    if (!factory) return;
-    setStored(saveWalletState(window.localStorage, factory, address, network.chain.id));
-  }
-
   return (
     <main>
       <p className="eyebrow">WalletConnect wallet · Demo B</p>
       <h1>zkAccount Wallet</h1>
-      <p>Recover with Google, unlock with a passkey, and approve requests from AppKit dapps.</p>
+      <p>
+        Create a passkey, authorize it with Google on the passkey manager, then sign with it here.
+      </p>
 
       <label htmlFor="network">Network</label>
       <select
@@ -400,9 +445,7 @@ function App() {
       )}
 
       <section>
-        <strong>
-          {authorized ? "Wallet unlocked" : stored ? "Wallet locked" : "Recover wallet"}
-        </strong>
+        <strong>{authorized ? "Wallet ready" : stored ? "Load wallet" : "Create a passkey"}</strong>
         {account && <span>{account}</span>}
         {account && (
           <span>
@@ -411,19 +454,18 @@ function App() {
         )}
         {device && <span>Passkey device: {device.address}</span>}
         <div className="actions compact">
-          <button disabled={busy} onClick={() => void loadPasskey(false)}>
-            Unlock passkey
+          {stored && (
+            <button disabled={busy} onClick={() => void loadStoredWallet()}>
+              Load stored wallet
+            </button>
+          )}
+          <button
+            disabled={busy}
+            className="secondary"
+            onClick={() => void createPasskeyAndAuthorize()}
+          >
+            Create passkey
           </button>
-          {!stored && (
-            <button disabled={busy} className="secondary" onClick={() => void loadPasskey(true)}>
-              Create passkey
-            </button>
-          )}
-          {proof && !authorized && (
-            <button disabled={busy || !bundlerUrl} onClick={() => void authorizeDevice()}>
-              Authorize wallet device
-            </button>
-          )}
           {authorized && (
             <button disabled={busy} className="secondary" onClick={() => void refresh()}>
               Refresh
@@ -435,10 +477,6 @@ function App() {
             </button>
           )}
         </div>
-        <div
-          ref={googleButton}
-          className={`google-button${device && !authorized ? " visible" : ""}`}
-        />
       </section>
 
       <section>
@@ -475,7 +513,7 @@ function App() {
               </React.Fragment>
             ))}
           </dl>
-          {!authorized && <small>Unlock the authorized passkey before approving.</small>}
+          {!authorized && <small>Load the authorized passkey before approving.</small>}
           <div className="actions compact">
             <button
               disabled={busy || !authorized}
@@ -542,20 +580,7 @@ function App() {
         <span>{status}</span>
       </section>
 
-      {login && (
-        <section>
-          <strong>Recovery authentication</strong>
-          <span>Audience: {login.claims.aud}</span>
-          <span>Nonce matched: yes</span>
-        </section>
-      )}
-      {proof && (
-        <section>
-          <strong>Private recovery proof</strong>
-          <span>Identity commitment: {proof.publicInputs[0]}</span>
-          <span>Proof size: {(proof.proof.length - 2) / 2} bytes</span>
-        </section>
-      )}
+      {!managerUrl && <small>Set VITE_PASSKEY_MANAGER_URL to the passkey manager's origin.</small>}
       {!reownProjectId && <small>Set VITE_REOWN_PROJECT_ID to enable WalletConnect.</small>}
       {!bundlerUrl && <small>Configure a {network.chain.name} EntryPoint v0.8 bundler URL.</small>}
       <footer className="legal-links">

@@ -1,39 +1,31 @@
 {
   "chainId": 84532,
   "deployedAt": "2026-08-25",
-  "protocolVersion": "google-nonce-erc1271-walletkit",
+  "protocolVersion": "google-nonce-erc1271-webauthn-redirect-v1",
   "compatibleWithCurrentArtifacts": true,
   "deployer": "0xae6d1975a3a3D73693580A91B688832448881CC3",
-  "deploymentBlock": 45965274,
+  "deploymentBlock": 45974182,
   "entryPoint": "0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108",
   "rootAudience": "0x003058e40c036af1aab38e49c89e0ee26d4d7be8fd6a665f8b37bde5507223d9",
   "rootClientId": "176685232849-e7govufghrlnprcc7cuijp5eusopci5b.apps.googleusercontent.com",
   "creForwarder": "0x82300bd7c3958625581cc2F77bC6464dcEcDF3e5",
   "creWorkflowOwner": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "googleVerifier": {
-    "address": "0x0370D2FE5b1d42f00Fac4132Fd8606607Ccc55d7",
-    "transactionHash": "0x106ddfbec887659b714653440161ba2b976b147660a5d5a5a60b08f28b0dda23"
+    "address": "0xF0F4815Aafbd260F9659EA4B72305F66088c0c06"
   },
   "googleKeyRegistry": {
-    "address": "0x6722F177B0E58A94f7B937B8319d6EBA300e16fA",
-    "transactionHash": "0x5ff4c745517a718fe9bb6bc787f494047c7b408c42a795e92f65f5ec581af31f"
+    "address": "0xed5cD1cF67D343D7c0D3908Ad6230D3a9D036B1B"
   },
   "googleAccountFactory": {
-    "address": "0xfFc6dFC1218bf0AA8B759c543DF2F81eF07A34B0",
-    "transactionHash": "0x7aacc0e02e24c790ae1a7415baaf5b65d4b42a4b1816147c3797c720ad36f25c"
+    "address": "0x8E0680C25dfbcCEa7CaD7F6Ad19A20B13bD76b26"
   },
   "googleJwtValidator": {
-    "address": "0xDaDBB1130aE516E36Fe7021111462BFE630e98fb",
-    "transactionHash": "0x4cf943412355af196757daa25d4ae31618718c384423be5177da858a95d980d1"
+    "address": "0x055A6F52923CdCec9EE0C9386d85E644b48a697E"
   },
-  "factoryInitializationTransactionHash": "0xa96ee7ef7a04f97ea25299fe973141cec4d6b76351ea57e10c15e8196f2d1845",
   "creSimulation": {
-    "simulatedAt": "2026-08-25T16:03:16Z",
+    "simulatedAt": "2026-08-25T20:57:57Z",
     "googleKeyCount": 4,
-    "binaryHash": "ae72bbcd6282f4f19f1e34abb3bc877b22a358de34af634d3be678e81f1e35ca",
-    "configHash": "007298ef40dc17c9079bd4223c1dd4afe46b0afe210da876a676d87e9dbf9ce9",
-    "broadcastTransactionHash": "0x2a02c8c3d7a70cafcc1de88a5aed442d1e6843c9323cfc46e322b095b4710aa3",
     "liveRegistryUpdated": true,
-    "note": "Local single-node CRE simulation broadcast through the Base Sepolia MockKeystoneForwarder."
+    "note": "Local single-node CRE simulation broadcast through the Base Sepolia MockKeystoneForwarder using `cre workflow simulate --broadcast`."
   }
 }

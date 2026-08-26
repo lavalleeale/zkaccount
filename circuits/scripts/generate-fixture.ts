@@ -38,11 +38,12 @@ function toBytes(value: bigint, length: number): Buffer {
 
 function loginNonce(): string {
   const preimage = Buffer.concat([
-    Buffer.from("GOOGLE_4337_LOGIN_V1"),
+    Buffer.from("GOOGLE_4337_LOGIN_V2"),
     toBytes(chainId, 32),
     toBytes(factory, 20),
     toBytes(device, 20),
     toBytes(validUntil, 8),
+    Buffer.from([1]),
     randomness,
   ]);
   return `0x${createHash("sha256").update(preimage).digest("hex")}`;
@@ -125,6 +126,7 @@ const entries: Record<string, string> = {
   chain_id_bytes: array(toBytes(chainId, 32)),
   factory_address_bytes: array(toBytes(factory, 20)),
   valid_until_bytes: array(toBytes(validUntil, 8)),
+  action_bytes: array([1]),
   header: array(pad(Buffer.from(headerText), MAX_HEADER)),
   header_len: quote(Buffer.byteLength(headerText)),
   payload: array(pad(Buffer.from(payloadText), MAX_PAYLOAD)),
@@ -156,6 +158,7 @@ const entries: Record<string, string> = {
     validUntil,
     low248Sha(keyPreimage),
     issuedAt,
+    1n,
   ]),
 };
 

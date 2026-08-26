@@ -2,3 +2,5 @@ staging-settings:
   rpcs:
     - chain-name: ethereum-testnet-sepolia
       url: https://ethereum-sepolia-rpc.publicnode.com
+    - chain-name: ethereum-testnet-sepolia-base-1
+      url: https://sepolia.base.org

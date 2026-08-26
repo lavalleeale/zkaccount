@@ -88,30 +88,23 @@ section {
   border-radius: 12px;
   word-break: break-word;
 }
-.client-ids {
+.device-list {
   margin: 0;
-  padding-left: 20px;
+  padding: 0;
+  list-style: none;
 }
-.client-ids li {
+.device-list li {
   align-items: center;
   display: flex;
-  gap: 8px;
+  gap: 12px;
   justify-content: space-between;
   margin: 4px 0;
 }
-.remove-client-id {
-  align-items: center;
-  background: transparent;
-  color: #a92d3a;
-  display: inline-flex;
-  font-size: 22px;
-  height: 28px;
-  justify-content: center;
-  padding: 0;
-  width: 28px;
+.device-list li > span {
+  font-weight: 600;
 }
-.remove-client-id:hover {
-  background: #f8dfe2;
+.device-list li > small {
+  overflow-wrap: anywhere;
 }
 small {
   color: #6b7280;

@@ -69,10 +69,10 @@
           supplied by Google, but the demo does not use them to create a profile.
         </li>
         <li>
-          <strong>Passkey data.</strong> Your browser and authenticator create or retrieve a
-          passkey. When supported, the demo uses the passkey PRF extension to derive an
-          origin-specific device signing key in browser memory. If PRF is unavailable, it creates a
-          temporary signing key that lasts only for the page session.
+          <strong>Passkey data.</strong> Your browser and authenticator create or retrieve a P-256
+          passkey. The demo stores its public credential ID, public-key coordinates, and
+          relying-party hash locally, then asks the authenticator for a fresh user-verified WebAuthn
+          assertion whenever you sign.
         </li>
         <li>
           <strong>Blockchain data.</strong> The demo reads account addresses, balances, authorized
@@ -88,9 +88,10 @@
         Google token processing and proof generation happen locally in your browser. The demo does
         not intentionally send the full Google ID token or the Google subject identifier to an
         application backend, and it does not operate an account database. Authentication results,
-        proof data, and temporary device keys are held in page memory and disappear when the page is
-        reloaded or closed. Demo A may display selected token claims in the page during that session
-        for development transparency.
+        proof data are held in page memory and disappear when the page is reloaded or closed. Public
+        passkey metadata is retained in local storage so the credential can be used again. Demo A
+        may display selected token claims in the page during that session for development
+        transparency.
       </p>
       <p>
         A passkey remains under the control of your browser, operating system, authenticator, and

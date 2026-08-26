@@ -99,7 +99,7 @@ const proposal = {
 mock.emit("session_proposal", proposal);
 await new Promise((resolve) => setTimeout(resolve, 0));
 assert.equal(activePrompt?.kind, "session_proposal");
-await assert.rejects(controller.approveProposal(activePrompt as never), /Unlock or recover/);
+await assert.rejects(controller.approveProposal(activePrompt as never), /Load or recover/);
 controller.setAccount(getAddress("0x1111111111111111111111111111111111111111"));
 await controller.approveProposal(activePrompt as never);
 assert.equal(mock.approved.length, 1);

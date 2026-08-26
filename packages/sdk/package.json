@@ -7,7 +7,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "tsx tests/account.test.ts && tsx tests/userop.test.ts",
+    "test": "tsx tests/account.test.ts && tsx tests/redirect.test.ts && tsx tests/userop.test.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {

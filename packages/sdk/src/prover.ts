@@ -170,6 +170,7 @@ export async function buildGoogleCircuitInputs(login: GoogleLoginResult): Promis
     chain_id_bytes: byteInputs(bigIntToBytes(chainId, 32)),
     factory_address_bytes: byteInputs(bigIntToBytes(factory, 20)),
     valid_until_bytes: byteInputs(bigIntToBytes(validUntil, 8)),
+    action_bytes: byteInputs(bigIntToBytes(BigInt(login.challenge.action), 1)),
     header: byteInputs(pad(headerBytes, MAX_HEADER)),
     header_len: headerBytes.length,
     payload: byteInputs(pad(payloadBytes, MAX_PAYLOAD)),
@@ -201,6 +202,7 @@ export async function buildGoogleCircuitInputs(login: GoogleLoginResult): Promis
       validUntil,
       keyHash,
       BigInt(login.claims.iat),
+      BigInt(login.challenge.action),
     ].map(field),
   };
 }
