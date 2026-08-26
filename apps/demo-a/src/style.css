@@ -66,15 +66,14 @@ body {
 .wordmark-mark {
   width: 22px;
   height: 22px;
-  border-radius: 7px;
-  background: var(--accent-strong);
-  display: grid;
-  place-items: center;
+  border-radius: 5px;
+  overflow: hidden;
 }
 
-.wordmark-mark svg {
-  width: 13px;
-  height: 13px;
+.wordmark-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .network-pill {

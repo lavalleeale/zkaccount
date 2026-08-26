@@ -240,7 +240,7 @@ export async function createWalletConnectController(
       name: "zkAccount Demo B",
       description: "Google-recoverable ERC-4337 smart wallet",
       url: window.location.origin,
-      icons: [`${window.location.origin}/wallet-icon.svg`],
+      icons: [`${window.location.origin}/logo.svg`],
       redirect: { universal: `${window.location.origin}/wc` },
     },
   });

@@ -651,15 +651,7 @@ function App() {
         <div className="topbar-inner">
           <span className="wordmark">
             <span className="wordmark-mark">
-              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path
-                  d="M6 7h12l-7 10h7"
-                  stroke="#7c9cf0"
-                  strokeWidth="2.4"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
+              <img src="/logo.svg" alt="" />
             </span>
             zkAccount
           </span>
