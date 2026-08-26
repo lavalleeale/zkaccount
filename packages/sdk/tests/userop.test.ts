@@ -26,7 +26,7 @@ const device = testDevice.address;
 const factory = getAddress("0x3333333333333333333333333333333333333333");
 const accountAbi = parseAbi([
   "function execute(address target, uint256 value, bytes data)",
-  "function addDevice(address device, bytes32 qx, bytes32 qy, string rpId)",
+  "function queueDevice(address device, bytes32 qx, bytes32 qy, string rpId)",
 ]);
 
 const outer = decodeFunctionData({ abi: accountAbi, data: addDeviceCall(account, testDevice) });
@@ -34,7 +34,7 @@ assert.equal(outer.functionName, "execute");
 assert.equal(outer.args[0], account);
 assert.equal(outer.args[1], 0n);
 const inner = decodeFunctionData({ abi: accountAbi, data: outer.args[2] });
-assert.equal(inner.functionName, "addDevice");
+assert.equal(inner.functionName, "queueDevice");
 assert.equal(inner.args[0], device);
 assert.equal(inner.args[1], publicKeyX);
 assert.equal(inner.args[2], publicKeyY);

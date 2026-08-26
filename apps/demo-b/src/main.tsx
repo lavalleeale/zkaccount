@@ -40,7 +40,9 @@ const networks = {
     rpcUrl: (import.meta.env.VITE_BASE_SEPOLIA_RPC_URL ?? "https://sepolia.base.org") as string,
     bundlerUrl: (import.meta.env.VITE_BASE_SEPOLIA_BUNDLER_URL ??
       import.meta.env.VITE_BUNDLER_URL) as string | undefined,
-    factoryDeploymentBlock: 45_974_182n,
+    factoryDeploymentBlock: BigInt(
+      (import.meta.env.VITE_BASE_SEPOLIA_FACTORY_DEPLOYMENT_BLOCK as string | undefined) ?? "0",
+    ),
   },
   "ethereum-sepolia": {
     chain: sepolia,

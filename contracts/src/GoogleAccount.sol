@@ -19,6 +19,14 @@ contract GoogleAccount {
     error InvalidDeviceIdentifier();
     error ZeroAddress();
     error GoogleNonceNotIncreasing(uint64 provided, uint64 current);
+    error NoPendingDevice();
+    error TimelockNotElapsed();
+
+    /// @notice Delay before a Google-authorized device becomes usable, giving an
+    /// existing device time to notice and cancel an unauthorized addition. Only
+    /// applies once the account already has a device to protect; see
+    /// `queueDevice`. An existing device can waive it entirely via `approveDevice`.
+    uint48 public constant DEVICE_ADD_DELAY = 2 days;
 
     bytes32 public immutable identity;
     IEntryPoint public immutable entryPoint;
@@ -32,10 +40,22 @@ contract GoogleAccount {
         bool enabled;
     }
 
+    struct PendingDevice {
+        bytes32 qx;
+        bytes32 qy;
+        bytes32 rpIdHash;
+        uint48 queuedAt;
+        string rpId;
+    }
+
     mapping(address device => WebAuthnDevice credential) public webAuthnDevices;
+    mapping(address device => PendingDevice pending) public pendingDevices;
+    uint256 public deviceCount;
     uint64 public googleNonce;
 
     event DeviceSet(address indexed device, bool enabled, string rpId);
+    event DeviceQueued(address indexed device, string rpId, uint48 readyAt);
+    event DevicePendingCancelled(address indexed device);
     event Executed(address indexed target, uint256 value, bytes data);
 
     constructor(
@@ -84,13 +104,79 @@ contract GoogleAccount {
         bytes32 rpIdHash = sha256(bytes(rpId));
         if (device == address(0)) revert ZeroAddress();
         if (device != deviceIdentifier(qx, qy, rpIdHash)) revert InvalidDeviceIdentifier();
+        if (!webAuthnDevices[device].enabled) deviceCount++;
         webAuthnDevices[device] = WebAuthnDevice(qx, qy, rpIdHash, true);
         emit DeviceSet(device, true, rpId);
     }
 
     function removeDevice(address device) external onlySelf {
+        if (webAuthnDevices[device].enabled) deviceCount--;
         delete webAuthnDevices[device];
         emit DeviceSet(device, false, "");
+    }
+
+    /// @notice Revokes every device in one self-call. Only reachable through a
+    /// device-mode (0x00) signature: Google-proof (0x01) validation binds each
+    /// proof to exactly one device and rejects any other call shape.
+    function removeAllDevices(address[] calldata devices) external onlySelf {
+        for (uint256 i = 0; i < devices.length; i++) {
+            if (webAuthnDevices[devices[i]].enabled) deviceCount--;
+            delete webAuthnDevices[devices[i]];
+            emit DeviceSet(devices[i], false, "");
+        }
+    }
+
+    /// @notice Entry point for Google-authorized device additions (see
+    /// `_isAddDeviceCall`). Bootstrapping an empty account (no device to protect
+    /// or notify) enables immediately; otherwise the device is queued behind
+    /// `DEVICE_ADD_DELAY` so an existing device can cancel an unrecognized
+    /// addition, or approve it early via `approveDevice`.
+    function queueDevice(address device, bytes32 qx, bytes32 qy, string calldata rpId) external onlySelf {
+        bytes32 rpIdHash = sha256(bytes(rpId));
+        if (device == address(0)) revert ZeroAddress();
+        if (device != deviceIdentifier(qx, qy, rpIdHash)) revert InvalidDeviceIdentifier();
+        if (deviceCount == 0) {
+            webAuthnDevices[device] = WebAuthnDevice(qx, qy, rpIdHash, true);
+            deviceCount++;
+            emit DeviceSet(device, true, rpId);
+            return;
+        }
+        pendingDevices[device] = PendingDevice(qx, qy, rpIdHash, uint48(block.timestamp), rpId);
+        emit DeviceQueued(device, rpId, uint48(block.timestamp) + DEVICE_ADD_DELAY);
+    }
+
+    /// @notice Activates a queued device once its timelock has elapsed.
+    /// Permissionless: the device was already authorized by a Google proof and
+    /// given a full delay window for an existing device to cancel it, so there's
+    /// nothing left to gate this on.
+    function finalizeDevice(address device) external {
+        PendingDevice storage pending = pendingDevices[device];
+        if (pending.queuedAt == 0) revert NoPendingDevice();
+        if (block.timestamp < uint256(pending.queuedAt) + DEVICE_ADD_DELAY) revert TimelockNotElapsed();
+        _activatePendingDevice(device);
+    }
+
+    /// @notice Lets an already-trusted device vouch for a queued one, skipping
+    /// the remaining delay entirely (e.g. approving a fresh Google sign-in on a
+    /// new device from a device you're already logged in on).
+    function approveDevice(address device) external onlySelf {
+        if (pendingDevices[device].queuedAt == 0) revert NoPendingDevice();
+        _activatePendingDevice(device);
+    }
+
+    /// @notice Vetoes a queued device before it activates.
+    function cancelPendingDevice(address device) external onlySelf {
+        if (pendingDevices[device].queuedAt == 0) revert NoPendingDevice();
+        delete pendingDevices[device];
+        emit DevicePendingCancelled(device);
+    }
+
+    function _activatePendingDevice(address device) internal {
+        PendingDevice memory pending = pendingDevices[device];
+        delete pendingDevices[device];
+        webAuthnDevices[device] = WebAuthnDevice(pending.qx, pending.qy, pending.rpIdHash, true);
+        deviceCount++;
+        emit DeviceSet(device, true, pending.rpId);
     }
 
     function deviceKeys(address device) external view returns (bool) {
@@ -144,17 +230,10 @@ contract GoogleAccount {
             abi.decode(encodedAuthorization, (bytes, bytes32[], bytes32, bytes32, string));
         GoogleJWTValidator.GoogleAuthorization memory auth =
             googleValidator.verifyGoogleAuthorization(address(this), proof, publicInputs);
-        uint8 actionAddDevice = googleValidator.ACTION_ADD_DEVICE();
-        uint8 actionRemoveDevice = googleValidator.ACTION_REMOVE_DEVICE();
-        if (auth.action == actionAddDevice) {
-            if (!_isAddDeviceCall(callData, auth.deviceKey, qx, qy, rpId)) revert InvalidGoogleCallData();
-        } else if (auth.action == actionRemoveDevice) {
-            if (!_isRemoveDeviceCall(callData, auth.deviceKey, qx, qy, rpId)) revert InvalidGoogleCallData();
-        } else revert InvalidGoogleCallData();
+        if (!_isAddDeviceCall(callData, auth.deviceKey, qx, qy, rpId)) revert InvalidGoogleCallData();
         // An already-installed device needs no second bootstrap. The monotonic
         // Google nonce below permanently rejects the proof even after removal.
-        if (auth.action == actionAddDevice && webAuthnDevices[auth.deviceKey].enabled) return SIG_VALIDATION_FAILED;
-        if (auth.action == actionRemoveDevice && !webAuthnDevices[auth.deviceKey].enabled) return SIG_VALIDATION_FAILED;
+        if (webAuthnDevices[auth.deviceKey].enabled) return SIG_VALIDATION_FAILED;
         uint64 currentNonce = googleNonce;
         if (auth.googleNonce <= currentNonce) {
             revert GoogleNonceNotIncreasing(auth.googleNonce, currentNonce);
@@ -172,16 +251,7 @@ contract GoogleAccount {
         returns (bool)
     {
         if (device != deviceIdentifier(qx, qy, sha256(bytes(rpId)))) return false;
-        bytes memory inner = abi.encodeCall(this.addDevice, (device, qx, qy, rpId));
-        bytes memory expected = abi.encodeCall(this.execute, (address(this), 0, inner));
-        return keccak256(callData) == keccak256(expected);
-    }
-
-    function _isRemoveDeviceCall(bytes calldata callData, address device, bytes32 qx, bytes32 qy, string memory rpId)
-        internal view returns (bool)
-    {
-        if (qx != bytes32(0) || qy != bytes32(0) || bytes(rpId).length != 0) return false;
-        bytes memory inner = abi.encodeCall(this.removeDevice, (device));
+        bytes memory inner = abi.encodeCall(this.queueDevice, (device, qx, qy, rpId));
         bytes memory expected = abi.encodeCall(this.execute, (address(this), 0, inner));
         return keccak256(callData) == keccak256(expected);
     }

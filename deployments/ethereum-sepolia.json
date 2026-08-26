@@ -4,26 +4,26 @@
   "protocolVersion": "google-nonce-erc1271-webauthn-redirect-v1",
   "compatibleWithCurrentArtifacts": true,
   "deployer": "0xae6d1975a3a3D73693580A91B688832448881CC3",
-  "deploymentBlock": 11568525,
+  "deploymentBlock": 11568847,
   "entryPoint": "0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108",
   "rootAudience": "0x003058e40c036af1aab38e49c89e0ee26d4d7be8fd6a665f8b37bde5507223d9",
   "rootClientId": "176685232849-e7govufghrlnprcc7cuijp5eusopci5b.apps.googleusercontent.com",
   "creForwarder": "0x15fC6ae953E024d975e77382eEeC56A9101f9F88",
   "creWorkflowOwner": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "googleVerifier": {
-    "address": "0x36b51979aEAa808DF237c4b1E473a41D27D5b0a1"
+    "address": "0x8e9d5c4BD0b4515c422D291274569a685C98e5F0"
   },
   "googleKeyRegistry": {
-    "address": "0x0b899fBB2A88427874bE7Df6a2664c912d8baC6A"
+    "address": "0xE952bbAFd809D20636d16F520EEB65854D5A60D5"
   },
   "googleAccountFactory": {
-    "address": "0xe60D88bc66FF43700c6Ddf9cB32a03f9976073f6"
+    "address": "0x4062F19cFA4c60770B800c6a7987F4c76df568bF"
   },
   "googleJwtValidator": {
-    "address": "0xcf2e0762d57c2Be4939A1ee53Cffd9B6828696Cf"
+    "address": "0xe86a093F34A253A9b704Ea0a3729f688a6984faf"
   },
   "creSimulation": {
-    "simulatedAt": "2026-08-25T20:58:49Z",
+    "simulatedAt": "2026-08-25T22:24:37Z",
     "googleKeyCount": 4,
     "liveRegistryUpdated": true,
     "note": "Local single-node CRE simulation broadcast through the Ethereum Sepolia MockKeystoneForwarder using `cre workflow simulate --broadcast`."

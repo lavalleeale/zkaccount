@@ -16,7 +16,6 @@ interface IGoogleAccountFactoryView {
 contract GoogleJWTValidator {
     uint256 public constant PUBLIC_INPUT_COUNT = 9;
     uint8 public constant ACTION_ADD_DEVICE = 1;
-    uint8 public constant ACTION_REMOVE_DEVICE = 2;
 
     error InvalidPublicInputCount();
     error InvalidProof();
@@ -85,7 +84,7 @@ contract GoogleJWTValidator {
         if (uint256(publicInputs[3]) != block.chainid) revert WrongChain();
         if (validUntil > type(uint48).max || block.timestamp > validUntil) revert AuthorizationExpired();
         if (googleNonce > type(uint64).max) revert InvalidGoogleNonce();
-        if (action != ACTION_ADD_DEVICE && action != ACTION_REMOVE_DEVICE) revert InvalidAction();
+        if (action != ACTION_ADD_DEVICE) revert InvalidAction();
         auth.action = uint8(action);
         if (!keyRegistry.validKeys(publicInputs[6])) revert InvalidGoogleKey();
         if (IGoogleAccountView(account).identity() != auth.identity) revert WrongIdentity();

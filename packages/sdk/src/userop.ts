@@ -15,12 +15,12 @@ import {
 } from "viem";
 import { baseSepolia } from "viem/chains";
 import { signWithPasskey, type DeviceKey, type PublicDeviceKey } from "./account";
-import { GOOGLE_ACTION_ADD_DEVICE, GOOGLE_ACTION_REMOVE_DEVICE } from "./google";
+import { GOOGLE_ACTION_ADD_DEVICE } from "./google";
 import type { GoogleProof } from "./prover";
 
 export const BASE_SEPOLIA_CHAIN_ID = 84_532;
 export const ENTRY_POINT_V08 = getAddress("0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108");
-export const BASE_SEPOLIA_FACTORY_DEPLOYMENT_BLOCK = 45_974_182n;
+export const BASE_SEPOLIA_FACTORY_DEPLOYMENT_BLOCK = 45_976_355n;
 
 const factoryAbi = parseAbi([
   "function createAccount(bytes32 identity) returns (address account)",
@@ -29,10 +29,17 @@ const factoryAbi = parseAbi([
 const accountAbi = parseAbi([
   "function execute(address target, uint256 value, bytes data)",
   "function addDevice(address device, bytes32 qx, bytes32 qy, string rpId)",
+  "function queueDevice(address device, bytes32 qx, bytes32 qy, string rpId)",
+  "function approveDevice(address device)",
+  "function cancelPendingDevice(address device)",
   "function removeDevice(address device)",
+  "function removeAllDevices(address[] devices)",
   "function deviceKeys(address device) view returns (bool)",
+  "function pendingDevices(address device) view returns (bytes32 qx, bytes32 qy, bytes32 rpIdHash, uint48 queuedAt, string rpId)",
+  "function DEVICE_ADD_DELAY() view returns (uint48)",
   "function googleNonce() view returns (uint64)",
   "event DeviceSet(address indexed device, bool enabled, string rpId)",
+  "event DeviceQueued(address indexed device, string rpId, uint48 readyAt)",
 ]);
 const entryPointAbi = [
   {
@@ -208,11 +215,24 @@ export interface AuthorizedDevice extends PublicDeviceKey {
   enabled: boolean;
 }
 
+export interface PendingDevice {
+  readyAt: number;
+}
+
+export interface PendingDeviceInfo {
+  address: Address;
+  rpId: string;
+  readyAt: number;
+}
+
 export interface SubmissionResult {
   accountAddress: Address;
   userOpHash?: Hex;
   receipt?: UserOperationReceipt;
   alreadyAuthorized?: boolean;
+  /** Set when a Google-authorized device was queued behind the account's
+   * timelock instead of activating immediately (see `GoogleAccount.queueDevice`). */
+  pending?: PendingDevice;
 }
 
 export type StatusCallback = (status: string) => void;
@@ -280,6 +300,23 @@ export class Google4337Client {
     });
   }
 
+  async getPendingDevice(account: Address, device: Address): Promise<PendingDevice | undefined> {
+    if (!(await this.isDeployed(account))) return undefined;
+    const [, , , queuedAt] = await this.publicClient.readContract({
+      address: account,
+      abi: accountAbi,
+      functionName: "pendingDevices",
+      args: [device],
+    });
+    if (queuedAt === 0) return undefined;
+    const delay = await this.publicClient.readContract({
+      address: account,
+      abi: accountAbi,
+      functionName: "DEVICE_ADD_DELAY",
+    });
+    return { readyAt: queuedAt + delay };
+  }
+
   async getGoogleNonce(account: Address): Promise<bigint> {
     if (!(await this.isDeployed(account))) return 0n;
     return this.publicClient.readContract({
@@ -309,6 +346,32 @@ export class Google4337Client {
       events.push({ device, enabled, rpId });
     }
     return reduceAuthorizedDevices(events);
+  }
+
+  /// Lists devices queued behind the account's timelock (Google-authorized
+  /// but not yet active), re-checking each against current on-chain state so
+  /// devices that have since been approved or cancelled are excluded.
+  async listPendingDevices(account: Address): Promise<PendingDeviceInfo[]> {
+    if (!(await this.isDeployed(account))) return [];
+    const logs = await this.publicClient.getContractEvents({
+      address: account,
+      abi: accountAbi,
+      eventName: "DeviceQueued",
+      fromBlock: this.factoryDeploymentBlock,
+      toBlock: "latest",
+      strict: true,
+    });
+    const seen = new Map<Address, string>();
+    for (const log of logs) seen.set(log.args.device, log.args.rpId);
+    const pending = await Promise.all(
+      [...seen.entries()].map(async ([device, rpId]) => {
+        const info = await this.getPendingDevice(account, device);
+        return info ? { address: device, rpId, readyAt: info.readyAt } : undefined;
+      }),
+    );
+    return pending
+      .filter((entry): entry is PendingDeviceInfo => entry !== undefined)
+      .sort((left, right) => left.readyAt - right.readyAt);
   }
 
   async authorizeDevice(
@@ -359,6 +422,16 @@ export class Google4337Client {
       if (!receipt.success)
         throw new Error(`Bootstrap UserOperation reverted: ${receipt.receipt.transactionHash}`);
       onStatus(`Confirmed: ${receipt.receipt.transactionHash}`);
+      if (await this.isDeviceAuthorized(accountAddress, device.address)) {
+        return { accountAddress, userOpHash, receipt };
+      }
+      const pending = await this.getPendingDevice(accountAddress, device.address);
+      if (pending) {
+        onStatus(
+          `Device queued behind the account's timelock, ready at ${new Date(pending.readyAt * 1000).toLocaleString()}`,
+        );
+        return { accountAddress, userOpHash, receipt, pending };
+      }
       return { accountAddress, userOpHash, receipt };
     } catch (error) {
       if (await this.isDeviceAuthorized(accountAddress, device.address)) {
@@ -381,7 +454,7 @@ export class Google4337Client {
       throw new Error(`Local device ${device.address} is not authorized by ${accountAddress}`);
     }
     onStatus("Creating device-signed UserOperation");
-    let operation = await this.baseOperation(accountAddress, dummyDeviceSignature());
+    let operation = await this.baseOperation(accountAddress, dummyDeviceSignature(device));
     operation.callData = encodeFunctionData({
       abi: accountAbi,
       functionName: "execute",
@@ -401,42 +474,6 @@ export class Google4337Client {
     return { accountAddress, userOpHash, receipt };
   }
 
-  async revokeDeviceWithGoogle(
-    proof: GoogleProof,
-    device: Address,
-    onStatus: StatusCallback = () => undefined,
-  ): Promise<SubmissionResult> {
-    const proofGoogleNonce = validateProofContext(
-      proof,
-      device,
-      this.factory,
-      this.chain.id,
-      GOOGLE_ACTION_REMOVE_DEVICE,
-    );
-    const accountAddress = await this.getAccountAddress(proof.publicInputs[0]);
-    if (!(await this.isDeviceAuthorized(accountAddress, device)))
-      return { accountAddress, alreadyAuthorized: true };
-    if ((await this.getGoogleNonce(accountAddress)) >= proofGoogleNonce)
-      throw new GoogleLoginRaceError();
-    onStatus("Checking bundler compatibility");
-    await this.assertBundlerCompatibility();
-    let operation = await this.baseOperation(
-      accountAddress,
-      googleSignature(proof, {
-        publicKeyX: `0x${"00".repeat(32)}`,
-        publicKeyY: `0x${"00".repeat(32)}`,
-        rpId: "",
-      }),
-    );
-    operation.callData = removeDeviceCall(accountAddress, device);
-    operation = await this.withGasEstimate(operation);
-    const userOpHash = await this.bundler.sendUserOperation(operation, this.entryPoint);
-    const receipt = await this.bundler.waitForUserOperationReceipt(userOpHash);
-    if (!receipt.success)
-      throw new Error(`Device revocation reverted: ${receipt.receipt.transactionHash}`);
-    return { accountAddress, userOpHash, receipt };
-  }
-
   async removeDevice(
     accountAddress: Address,
     authorizingDevice: DeviceKey,
@@ -447,6 +484,71 @@ export class Google4337Client {
       abi: accountAbi,
       functionName: "removeDevice",
       args: [deviceToRemove],
+    });
+    return this.sendTransaction(
+      accountAddress,
+      authorizingDevice,
+      { to: accountAddress, data },
+      onStatus,
+    );
+  }
+
+  /// Lets an already-authorized local device vouch for a device still queued
+  /// behind the Google-authorization timelock, activating it immediately
+  /// instead of waiting out `DEVICE_ADD_DELAY`.
+  async approveDevice(
+    accountAddress: Address,
+    authorizingDevice: DeviceKey,
+    deviceToApprove: Address,
+    onStatus?: StatusCallback,
+  ): Promise<SubmissionResult> {
+    const data = encodeFunctionData({
+      abi: accountAbi,
+      functionName: "approveDevice",
+      args: [deviceToApprove],
+    });
+    return this.sendTransaction(
+      accountAddress,
+      authorizingDevice,
+      { to: accountAddress, data },
+      onStatus,
+    );
+  }
+
+  /// Vetoes a device still queued behind the Google-authorization timelock,
+  /// signed by an already-authorized local device.
+  async cancelPendingDevice(
+    accountAddress: Address,
+    authorizingDevice: DeviceKey,
+    deviceToCancel: Address,
+    onStatus?: StatusCallback,
+  ): Promise<SubmissionResult> {
+    const data = encodeFunctionData({
+      abi: accountAbi,
+      functionName: "cancelPendingDevice",
+      args: [deviceToCancel],
+    });
+    return this.sendTransaction(
+      accountAddress,
+      authorizingDevice,
+      { to: accountAddress, data },
+      onStatus,
+    );
+  }
+
+  /// Revokes every given device in a single UserOperation, signed by the
+  /// local passkey. Google proofs cannot authorize this call: each proof is
+  /// bound to exactly one device and action.
+  async removeAllDevices(
+    accountAddress: Address,
+    authorizingDevice: DeviceKey,
+    devicesToRemove: readonly Address[],
+    onStatus?: StatusCallback,
+  ): Promise<SubmissionResult> {
+    const data = encodeFunctionData({
+      abi: accountAbi,
+      functionName: "removeAllDevices",
+      args: [[...devicesToRemove]],
     });
     return this.sendTransaction(
       accountAddress,
@@ -495,9 +597,20 @@ export class Google4337Client {
     const estimate = await this.bundler.estimateUserOperationGas(operation, this.entryPoint);
     return {
       ...operation,
-      callGasLimit: bufferedQuantity(estimate.callGasLimit),
-      verificationGasLimit: bufferedQuantity(estimate.verificationGasLimit),
-      preVerificationGas: bufferedQuantity(estimate.preVerificationGas),
+      callGasLimit: maxQuantity(operation.callGasLimit, bufferedQuantity(estimate.callGasLimit)),
+      // The dummy signature used to obtain this estimate can take a cheaper
+      // path through validateUserOp than a real WebAuthn assertion (e.g. it
+      // may reference a device the account doesn't recognize, short-circuiting
+      // before signature verification runs), so never let the estimate lower
+      // the provisional floor set in baseOperation.
+      verificationGasLimit: maxQuantity(
+        operation.verificationGasLimit,
+        bufferedQuantity(estimate.verificationGasLimit),
+      ),
+      preVerificationGas: maxQuantity(
+        operation.preVerificationGas,
+        bufferedQuantity(estimate.preVerificationGas),
+      ),
     };
   }
 
@@ -527,24 +640,15 @@ export class Google4337Client {
   }
 }
 
+/// Builds the self-call a Google-authorized proof must match: `queueDevice`,
+/// not `addDevice`. `GoogleAccount` queues Google-authorized additions behind
+/// a timelock (instant only when the account has no devices yet to protect);
+/// an existing device can later call `approveDevice` to skip the wait.
 export function addDeviceCall(account: Address, device: PublicDeviceKey): Hex {
   const inner = encodeFunctionData({
     abi: accountAbi,
-    functionName: "addDevice",
+    functionName: "queueDevice",
     args: [device.address, device.publicKeyX, device.publicKeyY, device.rpId],
-  });
-  return encodeFunctionData({
-    abi: accountAbi,
-    functionName: "execute",
-    args: [account, 0n, inner],
-  });
-}
-
-export function removeDeviceCall(account: Address, device: Address): Hex {
-  const inner = encodeFunctionData({
-    abi: accountAbi,
-    functionName: "removeDevice",
-    args: [device],
   });
   return encodeFunctionData({
     abi: accountAbi,
@@ -591,10 +695,38 @@ export function googleSignature(
   return concat(["0x01", encoded]);
 }
 
-function dummyDeviceSignature(): Hex {
-  // Deliberately invalid, but generously sized so the bundler's calldata gas
-  // estimate covers the later variable-length WebAuthn assertion.
-  return `0x00${"00".repeat(640)}`;
+/// Builds a signature for gas estimation only, never submitted on-chain. It
+/// references the real (already-authorized) device rather than the zero
+/// address so `_validateWebAuthn` doesn't short-circuit on `!credential.enabled`
+/// during simulation: an unrecognized device returns immediately, which used
+/// to make the bundler's estimate miss the cost of the actual WebAuthn decode
+/// and P-256 verification, undershooting `verificationGasLimit` for the real
+/// operation and causing it to revert out of gas (AA23).
+function dummyDeviceSignature(device: Pick<DeviceKey, "address" | "rpIdHash">): Hex {
+  const encodedDevice = encodeAbiParameters([{ type: "address" }], [device.address]);
+  const authenticatorData = concat([device.rpIdHash, "0x05", `0x${"00".repeat(4)}`]);
+  const clientDataJSON = '{"type":"webauthn.get","challenge":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","origin":"https://example.invalid"}';
+  const typeIndex = clientDataJSON.indexOf('"type":"webauthn.get"');
+  const challengeIndex = clientDataJSON.indexOf('"challenge":"');
+  const encodedAssertion = encodeAbiParameters(
+    [
+      { type: "bytes32" },
+      { type: "bytes32" },
+      { type: "uint256" },
+      { type: "uint256" },
+      { type: "bytes" },
+      { type: "string" },
+    ],
+    [
+      `0x${"00".repeat(31)}01`,
+      `0x${"00".repeat(31)}01`,
+      BigInt(challengeIndex),
+      BigInt(typeIndex),
+      authenticatorData,
+      clientDataJSON,
+    ],
+  );
+  return concat(["0x00", encodedDevice, encodedAssertion]);
 }
 
 function validateProofContext(
@@ -635,6 +767,11 @@ function quantity(value: bigint): Hex {
 }
 function bufferedQuantity(value: Hex): Hex {
   return quantity((hexToBigInt(value) * 120n + 99n) / 100n);
+}
+function maxQuantity(a: Hex, b: Hex): Hex {
+  const left = hexToBigInt(a);
+  const right = hexToBigInt(b);
+  return left > right ? a : b;
 }
 function safeStringify(value: unknown): string {
   try {

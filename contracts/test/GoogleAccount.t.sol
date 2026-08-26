@@ -134,8 +134,8 @@ contract GoogleAccountTest {
         uint256 validationData = entryPoint.validate(account, op, keccak256("bootstrap"));
         _assertTrue(validationData != 1);
 
-        bytes memory addDevice = _addDeviceCall(P256_QX);
-        entryPoint.execute(account, address(account), 0, addDevice);
+        bytes memory queueDevice = _queueDeviceCall(P256_QX);
+        entryPoint.execute(account, address(account), 0, queueDevice);
         _assertTrue(account.deviceKeys(device));
     }
 
@@ -145,13 +145,13 @@ contract GoogleAccountTest {
 
         vm.expectEmit(true, false, false, true, address(account));
         emit DeviceSet(device, true, RP_ID);
-        entryPoint.execute(account, address(account), 0, _addDeviceCall(P256_QX));
+        entryPoint.execute(account, address(account), 0, _queueDeviceCall(P256_QX));
     }
 
     function testGoogleBootstrapRejectsSubstitutedWebAuthnKey() public {
         PackedUserOperation memory op = _googleAddDeviceOp(P256_QX, rootAudience, uint48(block.timestamp + 600));
         op.callData =
-            abi.encodeCall(account.execute, (address(account), 0, _addDeviceCall(bytes32(uint256(P256_QX) + 1))));
+            abi.encodeCall(account.execute, (address(account), 0, _queueDeviceCall(bytes32(uint256(P256_QX) + 1))));
         vm.expectRevert(GoogleAccount.InvalidGoogleCallData.selector);
         entryPoint.validate(account, op, keccak256("substituted-key"));
     }
@@ -160,7 +160,7 @@ contract GoogleAccountTest {
         PackedUserOperation memory op = _googleAddDeviceOp(P256_QX, rootAudience, uint48(block.timestamp + 600));
         bytes memory wrongRpIdCall = abi.encodeCall(
             account.execute,
-            (address(account), 0, abi.encodeCall(account.addDevice, (device, P256_QX, P256_QY, "wrong-rp-id")))
+            (address(account), 0, abi.encodeCall(account.queueDevice, (device, P256_QX, P256_QY, "wrong-rp-id")))
         );
         op.callData = wrongRpIdCall;
         vm.expectRevert(GoogleAccount.InvalidGoogleCallData.selector);
@@ -240,7 +240,7 @@ contract GoogleAccountTest {
     function testGoogleProofCannotBeReusedAfterDeviceInstallation() public {
         PackedUserOperation memory op = _googleAddDeviceOp(P256_QX, rootAudience, uint48(block.timestamp + 600));
         _assertTrue(entryPoint.validate(account, op, keccak256("first-bootstrap")) != 1);
-        entryPoint.execute(account, address(account), 0, _addDeviceCall(P256_QX));
+        entryPoint.execute(account, address(account), 0, _queueDeviceCall(P256_QX));
         _assertEq(entryPoint.validate(account, op, keccak256("replayed-bootstrap")), 1);
     }
 
@@ -268,7 +268,7 @@ contract GoogleAccountTest {
     function testGoogleProofCannotBeReusedAfterDeviceRemoval() public {
         PackedUserOperation memory op = _googleAddDeviceOp(P256_QX, rootAudience, uint48(block.timestamp + 600), 100);
         _assertTrue(entryPoint.validate(account, op, keccak256("bootstrap")) != 1);
-        entryPoint.execute(account, address(account), 0, _addDeviceCall(P256_QX));
+        entryPoint.execute(account, address(account), 0, _queueDeviceCall(P256_QX));
         entryPoint.execute(account, address(account), 0, abi.encodeCall(account.removeDevice, (device)));
         _assertTrue(!account.deviceKeys(device));
 
@@ -286,30 +286,17 @@ contract GoogleAccountTest {
         entryPoint.validate(account, second, keccak256("simultaneous-login"));
     }
 
-    function testGoogleAuthorizedRemoveDeviceRemovesOnlyProofBoundDevice() public {
+    /// @notice Device removal is only reachable through a device-signed UserOp
+    /// (see `testERC1271RejectsUnknownAndRevokedDevices`); Google proofs may
+    /// only authorize adding a device.
+    function testGoogleAuthorizedRemovalIsRejected() public {
         _bootstrap();
         _assertTrue(account.deviceKeys(device));
 
         PackedUserOperation memory op = _googleRemoveDeviceOp(device, rootAudience, uint48(block.timestamp + 600), 1_000);
-        _assertTrue(entryPoint.validate(account, op, keccak256("revoke")) != 1);
-        entryPoint.execute(account, address(account), 0, _removeDeviceCall(device));
-        _assertTrue(!account.deviceKeys(device));
-    }
-
-    function testGoogleRemoveRejectsSubstitutedTargetDevice() public {
-        _bootstrap();
-        PackedUserOperation memory op = _googleRemoveDeviceOp(device, rootAudience, uint48(block.timestamp + 600), 200);
-        op.callData =
-            abi.encodeCall(account.execute, (address(account), 0, _removeDeviceCall(address(0xB0B))));
-        vm.expectRevert(GoogleAccount.InvalidGoogleCallData.selector);
-        entryPoint.validate(account, op, keccak256("substituted-removal"));
-    }
-
-    function testGoogleRemoveRejectsAlreadyRemovedDevice() public {
-        _bootstrap();
-        entryPoint.execute(account, address(account), 0, abi.encodeCall(account.removeDevice, (device)));
-        PackedUserOperation memory op = _googleRemoveDeviceOp(device, rootAudience, uint48(block.timestamp + 600), 200);
-        _assertEq(entryPoint.validate(account, op, keccak256("already-removed")), 1);
+        vm.expectRevert(GoogleJWTValidator.InvalidAction.selector);
+        entryPoint.validate(account, op, keccak256("revoke"));
+        _assertTrue(account.deviceKeys(device));
     }
 
     function testWrongAudienceRejected() public {
@@ -367,12 +354,115 @@ contract GoogleAccountTest {
         account.addDevice(device, P256_QX, P256_QY, RP_ID);
         vm.expectRevert(GoogleAccount.OnlySelf.selector);
         account.removeDevice(device);
+        vm.expectRevert(GoogleAccount.OnlySelf.selector);
+        account.removeAllDevices(new address[](0));
+        vm.expectRevert(GoogleAccount.OnlySelf.selector);
+        account.queueDevice(device, P256_QX, P256_QY, RP_ID);
+        vm.expectRevert(GoogleAccount.OnlySelf.selector);
+        account.approveDevice(device);
+        vm.expectRevert(GoogleAccount.OnlySelf.selector);
+        account.cancelPendingDevice(device);
+    }
+
+    function testGoogleAddedSecondDeviceIsTimelockedNotInstant() public {
+        _bootstrap();
+        address secondDevice = _queueSecondDeviceViaGoogle();
+
+        _assertTrue(!account.deviceKeys(secondDevice));
+        vm.expectRevert(GoogleAccount.TimelockNotElapsed.selector);
+        account.finalizeDevice(secondDevice);
+    }
+
+    function testFinalizeDeviceActivatesAfterDelayAndIsPermissionless() public {
+        _bootstrap();
+        address secondDevice = _queueSecondDeviceViaGoogle();
+
+        vm.warp(block.timestamp + account.DEVICE_ADD_DELAY());
+        // No prank/self-call needed: finalizing an already-timelocked device is
+        // permissionless since the delay itself is the authorization.
+        account.finalizeDevice(secondDevice);
+        _assertTrue(account.deviceKeys(secondDevice));
+    }
+
+    function testFinalizeDeviceWithoutPendingEntryReverts() public {
+        _bootstrap();
+        vm.expectRevert(GoogleAccount.NoPendingDevice.selector);
+        account.finalizeDevice(address(0xB0B));
+    }
+
+    function testExistingDeviceCanCancelPendingDevice() public {
+        _bootstrap();
+        address secondDevice = _queueSecondDeviceViaGoogle();
+
+        entryPoint.execute(account, address(account), 0, abi.encodeCall(account.cancelPendingDevice, (secondDevice)));
+
+        vm.warp(block.timestamp + account.DEVICE_ADD_DELAY());
+        vm.expectRevert(GoogleAccount.NoPendingDevice.selector);
+        account.finalizeDevice(secondDevice);
+        _assertTrue(!account.deviceKeys(secondDevice));
+    }
+
+    function testExistingDeviceCanApproveDeviceToSkipTheDelay() public {
+        _bootstrap();
+        address secondDevice = _queueSecondDeviceViaGoogle();
+
+        entryPoint.execute(account, address(account), 0, abi.encodeCall(account.approveDevice, (secondDevice)));
+
+        _assertTrue(account.deviceKeys(secondDevice));
+    }
+
+    function testApproveDeviceWithoutPendingEntryReverts() public {
+        _bootstrap();
+        // approveDevice is onlySelf, so it's only reachable through execute(),
+        // which wraps the inner revert reason in CallFailed.
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                GoogleAccount.CallFailed.selector, abi.encodeWithSelector(GoogleAccount.NoPendingDevice.selector)
+            )
+        );
+        entryPoint.execute(account, address(account), 0, abi.encodeCall(account.approveDevice, (address(0xB0B))));
+    }
+
+    function testRemoveAllDevicesClearsEveryProvidedDevice() public {
+        _bootstrap();
+        address secondDevice = account.deviceIdentifier(bytes32(uint256(P256_QX) + 1), P256_QY, rpIdHash);
+        entryPoint.execute(
+            account,
+            address(account),
+            0,
+            abi.encodeCall(account.addDevice, (secondDevice, bytes32(uint256(P256_QX) + 1), P256_QY, RP_ID))
+        );
+        _assertTrue(account.deviceKeys(device));
+        _assertTrue(account.deviceKeys(secondDevice));
+
+        address[] memory devices = new address[](2);
+        devices[0] = device;
+        devices[1] = secondDevice;
+        entryPoint.execute(account, address(account), 0, abi.encodeCall(account.removeAllDevices, (devices)));
+
+        _assertTrue(!account.deviceKeys(device));
+        _assertTrue(!account.deviceKeys(secondDevice));
     }
 
     function _bootstrap() private {
         PackedUserOperation memory op = _googleAddDeviceOp(P256_QX, rootAudience, uint48(block.timestamp + 600));
         entryPoint.validate(account, op, keccak256("bootstrap"));
-        entryPoint.execute(account, address(account), 0, _addDeviceCall(P256_QX));
+        entryPoint.execute(account, address(account), 0, _queueDeviceCall(P256_QX));
+    }
+
+    /// @dev Queues a second device via a fresh Google proof once the account
+    /// already has one enabled device, so it lands behind the timelock instead
+    /// of activating immediately like the bootstrap device does.
+    function _queueSecondDeviceViaGoogle() private returns (address secondDevice) {
+        bytes32 secondQx = bytes32(uint256(P256_QX) + 1);
+        secondDevice = account.deviceIdentifier(secondQx, P256_QY, rpIdHash);
+        // Bootstrap already consumed a googleNonce derived from the same
+        // block.timestamp (validUntil - 300); this must strictly exceed it.
+        uint64 issuedAt = uint64(block.timestamp) + 500;
+        PackedUserOperation memory op =
+            _googleAddDeviceOp(secondQx, rootAudience, uint48(block.timestamp + 600), issuedAt);
+        entryPoint.validate(account, op, keccak256("second-device"));
+        entryPoint.execute(account, address(account), 0, _queueDeviceCall(secondQx));
     }
 
     function _updateGoogleKeys(bytes32 keyHash) private {
@@ -400,7 +490,7 @@ contract GoogleAccountTest {
         bytes32[] memory inputs =
             _publicInputs(bytes32(uint256(uint160(authorizedDevice))), audience, validUntil, issuedAt, ACTION_ADD_DEVICE);
 
-        bytes memory inner = abi.encodeCall(account.addDevice, (authorizedDevice, qx, P256_QY, RP_ID));
+        bytes memory inner = abi.encodeCall(account.queueDevice, (authorizedDevice, qx, P256_QY, RP_ID));
         op.sender = address(account);
         op.callData = abi.encodeCall(account.execute, (address(account), 0, inner));
         op.signature = abi.encodePacked(uint8(1), abi.encode(bytes("mock-proof"), inputs, qx, P256_QY, RP_ID));
@@ -430,7 +520,7 @@ contract GoogleAccountTest {
         bytes32[] memory inputs =
             _publicInputs(bytes32(uint256(uint160(authorizedDevice))), audience, validUntil, issuedAt, action);
 
-        bytes memory inner = abi.encodeCall(account.addDevice, (authorizedDevice, qx, P256_QY, RP_ID));
+        bytes memory inner = abi.encodeCall(account.queueDevice, (authorizedDevice, qx, P256_QY, RP_ID));
         op.sender = address(account);
         op.callData = abi.encodeCall(account.execute, (address(account), 0, inner));
         op.signature = abi.encodePacked(uint8(1), abi.encode(bytes("mock-proof"), inputs, qx, P256_QY, RP_ID));
@@ -453,13 +543,9 @@ contract GoogleAccountTest {
         inputs[8] = bytes32(uint256(action));
     }
 
-    function _addDeviceCall(bytes32 qx) private view returns (bytes memory) {
+    function _queueDeviceCall(bytes32 qx) private view returns (bytes memory) {
         address identifier = account.deviceIdentifier(qx, P256_QY, rpIdHash);
-        return abi.encodeCall(account.addDevice, (identifier, qx, P256_QY, RP_ID));
-    }
-
-    function _removeDeviceCall(address targetDevice) private view returns (bytes memory) {
-        return abi.encodeCall(account.removeDevice, (targetDevice));
+        return abi.encodeCall(account.queueDevice, (identifier, qx, P256_QY, RP_ID));
     }
 
     function _webAuthnSignature(address identifier, bytes32 challenge, bytes32 expectedRpIdHash, bytes32 r)

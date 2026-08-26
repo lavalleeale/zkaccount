@@ -12,9 +12,7 @@ import type { DeviceKey } from "./account";
 const LOGIN_DOMAIN = "GOOGLE_4337_LOGIN_V2";
 export const GOOGLE_ACTION_VIEW = 0;
 export const GOOGLE_ACTION_ADD_DEVICE = 1;
-export const GOOGLE_ACTION_REMOVE_DEVICE = 2;
-export type GoogleAuthorizationAction =
-  typeof GOOGLE_ACTION_VIEW | typeof GOOGLE_ACTION_ADD_DEVICE | typeof GOOGLE_ACTION_REMOVE_DEVICE;
+export type GoogleAuthorizationAction = typeof GOOGLE_ACTION_VIEW | typeof GOOGLE_ACTION_ADD_DEVICE;
 
 export interface LoginChallenge {
   deviceAddress: Address;

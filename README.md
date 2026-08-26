@@ -36,7 +36,7 @@ flowchart LR
 
 - Google signed an RS256 OIDC token for a hidden `sub`.
 - The token has the expected issuer, algorithm, audience, nonce, issued-at time, and expiry.
-- The nonce binds authorization to one action (add or remove a device), device address, chain, factory, and ten-minute proof window.
+- The nonce binds authorization to one action, device address, chain, factory, and ten-minute proof window. The circuit can attest either an add-device or remove-device action, but `GoogleAccount` only ever accepts the add-device one—removing a device requires a UserOp signed by an already-authorized device.
 - The private Google identity maps to the same Poseidon2 commitment—and therefore the same CREATE2 account—across independent apps.
 - The proof's audience matches the factory's immutable root Google OAuth client; no other client can authorize devices.
 - The signing key belongs to the CRE-managed set of current Google JWKs.
@@ -74,10 +74,11 @@ Demo A (the Google client and passkey manager):
 ```dotenv
 VITE_GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 VITE_BASE_SEPOLIA_FACTORY=your-base-sepolia-factory
+VITE_BASE_SEPOLIA_FACTORY_DEPLOYMENT_BLOCK=45976355
 VITE_BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
 VITE_BASE_SEPOLIA_BUNDLER_URL=https://your-base-sepolia-bundler.example/rpc
 VITE_ETHEREUM_SEPOLIA_FACTORY=your-ethereum-sepolia-factory
-VITE_ETHEREUM_SEPOLIA_FACTORY_DEPLOYMENT_BLOCK=11568525
+VITE_ETHEREUM_SEPOLIA_FACTORY_DEPLOYMENT_BLOCK=11568847
 VITE_ETHEREUM_SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
 VITE_ETHEREUM_SEPOLIA_BUNDLER_URL=https://your-ethereum-sepolia-bundler.example/rpc
 ```
@@ -87,10 +88,11 @@ Demo B (no Google client; it redirects to Demo A instead):
 ```dotenv
 VITE_PASSKEY_MANAGER_URL=http://localhost:5173/
 VITE_BASE_SEPOLIA_FACTORY=your-base-sepolia-factory
+VITE_BASE_SEPOLIA_FACTORY_DEPLOYMENT_BLOCK=45976355
 VITE_BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
 VITE_BASE_SEPOLIA_BUNDLER_URL=https://your-base-sepolia-bundler.example/rpc
 VITE_ETHEREUM_SEPOLIA_FACTORY=your-ethereum-sepolia-factory
-VITE_ETHEREUM_SEPOLIA_FACTORY_DEPLOYMENT_BLOCK=11568525
+VITE_ETHEREUM_SEPOLIA_FACTORY_DEPLOYMENT_BLOCK=11568847
 VITE_ETHEREUM_SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
 VITE_ETHEREUM_SEPOLIA_BUNDLER_URL=https://your-ethereum-sepolia-bundler.example/rpc
 # Create a wallet project at https://dashboard.walletconnect.com
@@ -135,7 +137,7 @@ The nine public inputs are ordered as identity commitment, audience hash, device
 
 `GoogleAccountFactory` deterministically deploys one account per identity commitment, and pins an immutable `rootAudience` derived from its configured Google OAuth client ID at construction—there is no per-account audience administration, so only that one client can ever authorize devices. `GoogleAccount` supports two ERC-4337 signature modes:
 
-- `0x01`: a short-lived Google proof that can execute exactly one proof-bound `addDevice` or `removeDevice` self-call, matching the proof's action;
+- `0x01`: a short-lived Google proof that can execute exactly one proof-bound `queueDevice` self-call to add a device (the validator rejects any other action, so a remove-device proof cannot authorize a call this way);
 - `0x00`: a canonical WebAuthn assertion from an authorized P-256 credential for subsequent operations.
 
 `addDevice` takes a cleartext RP ID string, derives its SHA-256 hash onchain, and emits it in the `DeviceSet` event; the SDK reconstructs each account's current, labeled device set purely from event logs (`Google4337Client.listAuthorizedDevices`), without storing duplicate RP ID strings in contract state.
@@ -167,38 +169,41 @@ Google's signing keys are not manually administered. The scheduled Chainlink CRE
 
 ## Deploy the current contract stack
 
-The native-WebAuthn account bytecode changes every counterfactual account address, so the demos require a fresh factory. The deployment script simulates by default and broadcasts only when `--broadcast` is explicitly supplied.
+The native-WebAuthn account bytecode changes every counterfactual account address, so the demos require a fresh factory. `contracts/script/Deploy.s.sol` deploys to one chain at a time; `contracts/script/DeployAll.s.sol` deploys the same stack to Base Sepolia and Ethereum Sepolia in a single run, forking each chain in turn. Both simulate by default and broadcast only when `--broadcast` is explicitly supplied. Local simulation needs `evm_version = "prague"` (set in `foundry.toml`) since Foundry's local EVM only models the RIP-7212/EIP-7951 P-256 precompile at `0x100` under that spec, even though both target chains already support it live under any configured version.
 
 ```sh
 export ENTRY_POINT=0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108
 export ROOT_GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-export CRE_FORWARDER=0x...
 export CRE_WORKFLOW_OWNER=0x...
+export BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
+export BASE_SEPOLIA_CRE_FORWARDER=0x...
+export ETHEREUM_SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
+export ETHEREUM_SEPOLIA_CRE_FORWARDER=0x...
 
-# Read-only simulation
-forge script contracts/script/Deploy.s.sol:Deploy --rpc-url https://sepolia.base.org --sender 0x... -vvv
+# Read-only simulation (both chains)
+forge script contracts/script/DeployAll.s.sol:DeployAll --rpc-url "$BASE_SEPOLIA_RPC_URL" --sender 0x... -vvv
 
-# Intentional live deployment
-forge script contracts/script/Deploy.s.sol:Deploy --rpc-url "$BASE_SEPOLIA_RPC_URL" --account your-keystore --sender 0x... --broadcast -vvv
+# Intentional live deployment (both chains)
+forge script contracts/script/DeployAll.s.sol:DeployAll --rpc-url "$BASE_SEPOLIA_RPC_URL" --account your-keystore --sender 0x... --broadcast --slow -vvv
 ```
 
-The current deployment was broadcast at Base Sepolia block `45974182`:
+The current deployment was broadcast at Base Sepolia block `45976355`:
 
 | Contract                | Current address                                                                                                                 |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| GoogleAccountFactory    | [`0x8E0680C25dfbcCEa7CaD7F6Ad19A20B13bD76b26`](https://sepolia.basescan.org/address/0x8E0680C25dfbcCEa7CaD7F6Ad19A20B13bD76b26) |
-| GoogleJWTValidator      | [`0x055A6F52923CdCec9EE0C9386d85E644b48a697E`](https://sepolia.basescan.org/address/0x055A6F52923CdCec9EE0C9386d85E644b48a697E) |
-| GeneratedGoogleVerifier | [`0xF0F4815Aafbd260F9659EA4B72305F66088c0c06`](https://sepolia.basescan.org/address/0xF0F4815Aafbd260F9659EA4B72305F66088c0c06) |
-| GoogleKeyRegistry       | [`0xed5cD1cF67D343D7c0D3908Ad6230D3a9D036B1B`](https://sepolia.basescan.org/address/0xed5cD1cF67D343D7c0D3908Ad6230D3a9D036B1B) |
+| GoogleAccountFactory    | [`0x8E56a8269930a040265e943aB47377f6e8E34c9f`](https://sepolia.basescan.org/address/0x8E56a8269930a040265e943aB47377f6e8E34c9f) |
+| GoogleJWTValidator      | [`0x00D1893e6A4e1d55d1B0D3cDEa9d405D25dD4FB9`](https://sepolia.basescan.org/address/0x00D1893e6A4e1d55d1B0D3cDEa9d405D25dD4FB9) |
+| GeneratedGoogleVerifier | [`0xe8a7cdbb216C08c2905218aF8FF82A869DbB0938`](https://sepolia.basescan.org/address/0xe8a7cdbb216C08c2905218aF8FF82A869DbB0938) |
+| GoogleKeyRegistry       | [`0x8f5F3686cF7297C0D338b1b3981561E14c7bA0bf`](https://sepolia.basescan.org/address/0x8f5F3686cF7297C0D338b1b3981561E14c7bA0bf) |
 
-The Ethereum Sepolia deployment was broadcast at block `11568525`:
+The Ethereum Sepolia deployment was broadcast at block `11568847`:
 
 | Contract                | Current address                                                                                                                 |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| GoogleAccountFactory    | [`0xe60D88bc66FF43700c6Ddf9cB32a03f9976073f6`](https://sepolia.etherscan.io/address/0xe60D88bc66FF43700c6Ddf9cB32a03f9976073f6) |
-| GoogleJWTValidator      | [`0xcf2e0762d57c2Be4939A1ee53Cffd9B6828696Cf`](https://sepolia.etherscan.io/address/0xcf2e0762d57c2Be4939A1ee53Cffd9B6828696Cf) |
-| GeneratedGoogleVerifier | [`0x36b51979aEAa808DF237c4b1E473a41D27D5b0a1`](https://sepolia.etherscan.io/address/0x36b51979aEAa808DF237c4b1E473a41D27D5b0a1) |
-| GoogleKeyRegistry       | [`0x0b899fBB2A88427874bE7Df6a2664c912d8baC6A`](https://sepolia.etherscan.io/address/0x0b899fBB2A88427874bE7Df6a2664c912d8baC6A) |
+| GoogleAccountFactory    | [`0x4062F19cFA4c60770B800c6a7987F4c76df568bF`](https://sepolia.etherscan.io/address/0x4062F19cFA4c60770B800c6a7987F4c76df568bF) |
+| GoogleJWTValidator      | [`0xe86a093F34A253A9b704Ea0a3729f688a6984faf`](https://sepolia.etherscan.io/address/0xe86a093F34A253A9b704Ea0a3729f688a6984faf) |
+| GeneratedGoogleVerifier | [`0x8e9d5c4BD0b4515c422D291274569a685C98e5F0`](https://sepolia.etherscan.io/address/0x8e9d5c4BD0b4515c422D291274569a685C98e5F0) |
+| GoogleKeyRegistry       | [`0xE952bbAFd809D20636d16F520EEB65854D5A60D5`](https://sepolia.etherscan.io/address/0xE952bbAFd809D20636d16F520EEB65854D5A60D5) |
 
 Both `GoogleKeyRegistry` contracts were populated with four Google signing keys via `cre workflow simulate --broadcast` against the CRE tenant's mock Keystone forwarder on each chain. This is a testnet simulation, not a production DON-attested report. Full addresses and simulation metadata are recorded in `deployments/base-sepolia-current.json` and `deployments/ethereum-sepolia.json`.
 
