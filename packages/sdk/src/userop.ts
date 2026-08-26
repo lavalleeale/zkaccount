@@ -9,6 +9,7 @@ import {
   isAddressEqual,
   numberToHex,
   parseAbi,
+  type Chain,
   type Address,
   type Hex,
 } from "viem";
@@ -18,7 +19,7 @@ import type { GoogleProof } from "./prover";
 
 export const BASE_SEPOLIA_CHAIN_ID = 84_532;
 export const ENTRY_POINT_V08 = getAddress("0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108");
-export const BASE_SEPOLIA_FACTORY_DEPLOYMENT_BLOCK = 45_961_770n;
+export const BASE_SEPOLIA_FACTORY_DEPLOYMENT_BLOCK = 45_965_274n;
 
 const factoryAbi = parseAbi([
   "function createAccount(bytes32 identity) returns (address account)",
@@ -91,6 +92,17 @@ export interface UserOperationGasEstimate {
   preVerificationGas: Hex;
 }
 
+export interface UserOperationGasPriceTier {
+  maxFeePerGas: Hex;
+  maxPriorityFeePerGas: Hex;
+}
+
+export interface UserOperationGasPrices {
+  slow: UserOperationGasPriceTier;
+  standard: UserOperationGasPriceTier;
+  fast: UserOperationGasPriceTier;
+}
+
 export interface UserOperationReceipt {
   userOpHash: Hex;
   sender: Address;
@@ -106,6 +118,16 @@ interface JsonRpcResponse<T> {
   error?: { code: number; message: string; data?: unknown };
 }
 
+class BundlerJsonRpcError extends Error {
+  constructor(
+    readonly code: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "BundlerJsonRpcError";
+  }
+}
+
 export class JsonRpcBundlerClient {
   private nextId = 1;
 
@@ -116,6 +138,15 @@ export class JsonRpcBundlerClient {
 
   async supportedEntryPoints(): Promise<Address[]> {
     return (await this.request<string[]>("eth_supportedEntryPoints", [])).map(getAddress);
+  }
+
+  async getUserOperationGasPrice(): Promise<UserOperationGasPrices | undefined> {
+    try {
+      return await this.request("pimlico_getUserOperationGasPrice", []);
+    } catch (error) {
+      if (error instanceof BundlerJsonRpcError && error.code === -32601) return undefined;
+      throw error;
+    }
   }
 
   async estimateUserOperationGas(
@@ -156,7 +187,8 @@ export class JsonRpcBundlerClient {
     const body = (await response.json()) as JsonRpcResponse<T>;
     if (body.error) {
       const detail = body.error.data === undefined ? "" : `: ${safeStringify(body.error.data)}`;
-      throw new Error(
+      throw new BundlerJsonRpcError(
+        body.error.code,
         `Bundler ${method} failed (${body.error.code}): ${body.error.message}${detail}`,
       );
     }
@@ -169,6 +201,7 @@ export interface Google4337ClientOptions {
   factory: Address;
   bundlerUrl: string;
   rpcUrl?: string;
+  chain?: Chain;
   entryPoint?: Address;
   factoryDeploymentBlock?: bigint;
 }
@@ -198,6 +231,7 @@ export class GoogleLoginRaceError extends Error {
 }
 
 export class Google4337Client {
+  readonly chain: Chain;
   readonly factory: Address;
   readonly entryPoint: Address;
   readonly factoryDeploymentBlock: bigint;
@@ -205,14 +239,15 @@ export class Google4337Client {
   readonly publicClient;
 
   constructor(options: Google4337ClientOptions) {
+    this.chain = options.chain ?? baseSepolia;
     this.factory = getAddress(options.factory);
     this.entryPoint = getAddress(options.entryPoint ?? ENTRY_POINT_V08);
     this.factoryDeploymentBlock =
       options.factoryDeploymentBlock ?? BASE_SEPOLIA_FACTORY_DEPLOYMENT_BLOCK;
     this.bundler = new JsonRpcBundlerClient(options.bundlerUrl);
     this.publicClient = createPublicClient({
-      chain: baseSepolia,
-      transport: http(options.rpcUrl ?? "https://sepolia.base.org"),
+      chain: this.chain,
+      transport: http(options.rpcUrl ?? this.chain.rpcUrls.default.http[0]),
     });
   }
 
@@ -295,7 +330,12 @@ export class Google4337Client {
     device: DeviceKey,
     onStatus: StatusCallback = () => undefined,
   ): Promise<SubmissionResult> {
-    const proofGoogleNonce = validateProofContext(proof, device.address, this.factory);
+    const proofGoogleNonce = validateProofContext(
+      proof,
+      device.address,
+      this.factory,
+      this.chain.id,
+    );
     const accountAddress = await this.getAccountAddress(proof.publicInputs[0]);
     onStatus(`Smart account predicted: ${accountAddress}`);
     if (await this.isDeviceAuthorized(accountAddress, device.address)) {
@@ -306,7 +346,7 @@ export class Google4337Client {
     }
     if ((await this.getBalance(accountAddress)) === 0n) {
       throw new Error(
-        `Fund counterfactual account ${accountAddress} with Base Sepolia ETH, then retry authorization`,
+        `Fund counterfactual account ${accountAddress} with ${this.chain.name} ETH, then retry authorization`,
       );
     }
     try {
@@ -419,9 +459,16 @@ export class Google4337Client {
       functionName: "getNonce",
       args: [sender, 0n],
     });
-    const estimatedFees = await this.publicClient.estimateFeesPerGas();
-    const priorityFee = estimatedFees.maxPriorityFeePerGas ?? 1_000_000n;
-    const estimatedMaxFee = estimatedFees.maxFeePerGas ?? (await this.publicClient.getGasPrice());
+    const bundlerGasPrices = await this.bundler.getUserOperationGasPrice();
+    const estimatedFees = bundlerGasPrices
+      ? undefined
+      : await this.publicClient.estimateFeesPerGas();
+    const priorityFee = bundlerGasPrices
+      ? hexToBigInt(bundlerGasPrices.standard.maxPriorityFeePerGas)
+      : (estimatedFees?.maxPriorityFeePerGas ?? 1_000_000n);
+    const estimatedMaxFee = bundlerGasPrices
+      ? hexToBigInt(bundlerGasPrices.standard.maxFeePerGas)
+      : (estimatedFees?.maxFeePerGas ?? (await this.publicClient.getGasPrice()));
     const maxFee = estimatedMaxFee > priorityFee ? estimatedMaxFee : priorityFee;
     const googleMode = signature.startsWith("0x01");
     return {
@@ -534,7 +581,12 @@ function dummyDeviceSignature(): Hex {
   return `0x00${"00".repeat(65)}`;
 }
 
-function validateProofContext(proof: GoogleProof, device: Address, factory: Address): bigint {
+function validateProofContext(
+  proof: GoogleProof,
+  device: Address,
+  factory: Address,
+  chainId: number,
+): bigint {
   if (proof.publicInputs.length !== 8)
     throw new Error("Google proof must contain exactly eight public inputs");
   const proofDevice = getAddress(`0x${proof.publicInputs[2].slice(-40)}`);
@@ -543,7 +595,7 @@ function validateProofContext(proof: GoogleProof, device: Address, factory: Addr
     throw new Error("Google proof is bound to a different device");
   if (!isAddressEqual(proofFactory, factory))
     throw new Error("Google proof is bound to a different factory");
-  if (hexToBigInt(proof.publicInputs[3]) !== BigInt(BASE_SEPOLIA_CHAIN_ID))
+  if (hexToBigInt(proof.publicInputs[3]) !== BigInt(chainId))
     throw new Error("Google proof is bound to a different chain");
   const googleNonce = hexToBigInt(proof.publicInputs[7]);
   if (googleNonce <= 0n || googleNonce > (1n << 64n) - 1n)

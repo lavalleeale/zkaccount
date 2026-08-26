@@ -8,6 +8,7 @@ import {
   GoogleLoginRaceError,
   Google4337Client,
   hashGoogleAudience,
+  JsonRpcBundlerClient,
   reduceAuthorizedClientIds,
   removeAudienceCall,
 } from "../src/userop";
@@ -97,6 +98,7 @@ function authorizationClient(options: {
   let authorizationRead = 0;
   return Object.assign(Object.create(Google4337Client.prototype), {
     factory,
+    chain: { id: 84_532, name: "Base Sepolia" },
     getAccountAddress: async () => account,
     isDeviceAuthorized: async () =>
       options.authorized[Math.min(authorizationRead++, options.authorized.length - 1)],
@@ -137,5 +139,43 @@ assert.equal(
   ),
   "0x003058e40c036af1aab38e49c89e0ee26d4d7be8fd6a665f8b37bde5507223d9",
 );
+
+const originalFetch = globalThis.fetch;
+try {
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          slow: { maxFeePerGas: "0x10", maxPriorityFeePerGas: "0x01" },
+          standard: { maxFeePerGas: "0x20", maxPriorityFeePerGas: "0x02" },
+          fast: { maxFeePerGas: "0x30", maxPriorityFeePerGas: "0x03" },
+        },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  assert.deepEqual(
+    (await new JsonRpcBundlerClient("https://bundler.example").getUserOperationGasPrice())
+      ?.standard,
+    { maxFeePerGas: "0x20", maxPriorityFeePerGas: "0x02" },
+  );
+
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        error: { code: -32601, message: "Method not found" },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  assert.equal(
+    await new JsonRpcBundlerClient("https://bundler.example").getUserOperationGasPrice(),
+    undefined,
+  );
+} finally {
+  globalThis.fetch = originalFetch;
+}
 
 process.stdout.write("UserOperation encoding tests passed\n");

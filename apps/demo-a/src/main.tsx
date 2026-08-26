@@ -1,6 +1,7 @@
 import React, { useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { formatEther, type Address } from "viem";
+import { baseSepolia, sepolia } from "viem/chains";
 import {
   Google4337Client,
   createPasskeyDeviceKey,
@@ -17,16 +18,50 @@ import {
 import "./style.css";
 
 const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
-const factory = import.meta.env.VITE_ACCOUNT_FACTORY as Address | undefined;
-const rpcUrl = import.meta.env.VITE_BASE_SEPOLIA_RPC_URL as string | undefined;
-const bundlerUrl = import.meta.env.VITE_BUNDLER_URL as string | undefined;
+const NETWORK_KEY = "zkaccount.selected-network";
+const networks = {
+  "base-sepolia": {
+    chain: baseSepolia,
+    factory: (import.meta.env.VITE_BASE_SEPOLIA_FACTORY ?? import.meta.env.VITE_ACCOUNT_FACTORY) as
+      Address | undefined,
+    rpcUrl: (import.meta.env.VITE_BASE_SEPOLIA_RPC_URL ?? "https://sepolia.base.org") as string,
+    bundlerUrl: (import.meta.env.VITE_BASE_SEPOLIA_BUNDLER_URL ??
+      import.meta.env.VITE_BUNDLER_URL) as string | undefined,
+    factoryDeploymentBlock: 45_965_274n,
+  },
+  "ethereum-sepolia": {
+    chain: sepolia,
+    factory: import.meta.env.VITE_ETHEREUM_SEPOLIA_FACTORY as Address | undefined,
+    rpcUrl: (import.meta.env.VITE_ETHEREUM_SEPOLIA_RPC_URL ??
+      "https://ethereum-sepolia-rpc.publicnode.com") as string,
+    bundlerUrl: import.meta.env.VITE_ETHEREUM_SEPOLIA_BUNDLER_URL as string | undefined,
+    factoryDeploymentBlock: BigInt(
+      (import.meta.env.VITE_ETHEREUM_SEPOLIA_FACTORY_DEPLOYMENT_BLOCK as string | undefined) ?? "0",
+    ),
+  },
+} as const;
+type NetworkKey = keyof typeof networks;
+const selectedNetworkKey: NetworkKey =
+  window.localStorage.getItem(NETWORK_KEY) === "ethereum-sepolia"
+    ? "ethereum-sepolia"
+    : "base-sepolia";
+const network = networks[selectedNetworkKey];
+const { factory, rpcUrl, bundlerUrl } = network;
 const passkeyOptions = { scope: "demo-a", displayName: "zkAccount Demo A" };
 
 function App() {
   const button = useRef<HTMLDivElement>(null);
   const wallet = useMemo(
     () =>
-      factory ? new Google4337Client({ factory, bundlerUrl: bundlerUrl ?? "", rpcUrl }) : undefined,
+      factory
+        ? new Google4337Client({
+            factory,
+            bundlerUrl: bundlerUrl ?? "",
+            rpcUrl,
+            chain: network.chain,
+            factoryDeploymentBlock: network.factoryDeploymentBlock,
+          })
+        : undefined,
     [],
   );
   const [status, setStatus] = useState("Ready");
@@ -98,7 +133,7 @@ function App() {
       const result = await loginWithGoogle({
         clientId,
         factory,
-        chainId: 84532,
+        chainId: network.chain.id,
         button: button.current,
         device: localDevice,
       });
@@ -204,6 +239,18 @@ function App() {
       <p>
         Authenticate, prove the Google credential locally, then authorize this origin's device key.
       </p>
+      <label htmlFor="network">Network</label>
+      <select
+        id="network"
+        value={selectedNetworkKey}
+        onChange={(event) => {
+          window.localStorage.setItem(NETWORK_KEY, event.target.value);
+          window.location.reload();
+        }}
+      >
+        <option value="base-sepolia">Base Sepolia</option>
+        <option value="ethereum-sepolia">Ethereum Sepolia</option>
+      </select>
       <div className="actions">
         <button disabled={busy} onClick={() => void loadPasskey(false)}>
           Unlock passkey
@@ -241,7 +288,9 @@ function App() {
         <section>
           <strong>Smart account</strong>
           <span>{account}</span>
-          <span>Balance: {formatEther(balance)} Base Sepolia ETH</span>
+          <span>
+            Balance: {formatEther(balance)} {network.chain.name} ETH
+          </span>
           <span>Passkey device: {device?.address ?? "Create or unlock a passkey"}</span>
           {device && (
             <span>
@@ -323,7 +372,7 @@ function App() {
       )}
       {!bundlerUrl && (
         <small>
-          Set VITE_BUNDLER_URL to a Base Sepolia ERC-4337 bundler supporting EntryPoint v0.8.
+          Configure the {network.chain.name} ERC-4337 bundler URL with EntryPoint v0.8 support.
           Account prediction and proof generation work without it.
         </small>
       )}

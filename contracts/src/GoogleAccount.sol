@@ -8,6 +8,8 @@ import {GoogleJWTValidator} from "./GoogleJWTValidator.sol";
 contract GoogleAccount {
     uint8 public constant SIGNATURE_DEVICE = 0;
     uint8 public constant SIGNATURE_GOOGLE = 1;
+    bytes4 public constant ERC1271_MAGIC_VALUE = 0x1626ba7e;
+    bytes4 public constant ERC1271_INVALID_SIGNATURE = 0xffffffff;
     uint256 internal constant SIG_VALIDATION_FAILED = 1;
     uint256 internal constant SECP256K1N_HALF =
         0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0;
@@ -70,6 +72,16 @@ contract GoogleAccount {
         emit Executed(target, value, data);
     }
 
+    /// @notice Validates an offchain signature made by an authorized device key.
+    /// @dev The caller supplies the final digest (EIP-191, EIP-712, or another
+    /// application-specific digest) as required by ERC-1271.
+    function isValidSignature(bytes32 hash, bytes calldata signature) external view returns (bytes4) {
+        address signer = _recoverDeviceSigner(hash, signature);
+        return signer != address(0) && deviceKeys[signer]
+            ? ERC1271_MAGIC_VALUE
+            : ERC1271_INVALID_SIGNATURE;
+    }
+
     function addAudience(string calldata clientId) external onlySelf {
         bytes32 audience = GoogleAudience.hash(clientId);
         allowedAudiences[audience] = true;
@@ -117,7 +129,12 @@ contract GoogleAccount {
     }
 
     function _validateDevice(bytes32 userOpHash, bytes calldata signature) internal view returns (uint256) {
-        if (signature.length != 65) return SIG_VALIDATION_FAILED;
+        address signer = _recoverDeviceSigner(userOpHash, signature);
+        return signer != address(0) && deviceKeys[signer] ? 0 : SIG_VALIDATION_FAILED;
+    }
+
+    function _recoverDeviceSigner(bytes32 hash, bytes calldata signature) internal pure returns (address signer) {
+        if (signature.length != 65) return address(0);
         bytes32 r;
         bytes32 s;
         uint8 v;
@@ -127,10 +144,9 @@ contract GoogleAccount {
             v := byte(0, calldataload(add(signature.offset, 64)))
         }
         if (v < 27) v += 27;
-        if (v != 27 && v != 28) return SIG_VALIDATION_FAILED;
-        if (uint256(s) == 0 || uint256(s) > SECP256K1N_HALF) return SIG_VALIDATION_FAILED;
-        address signer = ecrecover(userOpHash, v, r, s);
-        return signer != address(0) && deviceKeys[signer] ? 0 : SIG_VALIDATION_FAILED;
+        if (v != 27 && v != 28) return address(0);
+        if (uint256(s) == 0 || uint256(s) > SECP256K1N_HALF) return address(0);
+        return ecrecover(hash, v, r, s);
     }
 
     function _validateGoogle(bytes calldata callData, bytes calldata encodedAuthorization) internal returns (uint256) {

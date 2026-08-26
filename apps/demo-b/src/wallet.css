@@ -1,0 +1,77 @@
+main {
+  width: min(760px, calc(100% - 48px));
+  margin: 32px 0;
+}
+
+.actions.compact {
+  margin-top: 8px;
+}
+
+.button-link {
+  border-radius: 10px;
+  background: #17223b;
+  color: white;
+  padding: 12px 18px;
+  text-decoration: none;
+}
+
+.wallet-prompt {
+  border: 2px solid #536b9e;
+}
+
+.wallet-prompt.warning {
+  border-color: #a92d3a;
+  background: #fff1f2;
+}
+
+dl {
+  display: grid;
+  grid-template-columns: minmax(90px, auto) 1fr;
+  gap: 8px 14px;
+  margin: 4px 0;
+}
+
+dt {
+  color: #536b9e;
+  font-size: 13px;
+}
+
+dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.session-row {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.session-row span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+code {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+  main {
+    padding: 24px;
+  }
+
+  h1 {
+    font-size: 34px;
+  }
+
+  dl {
+    grid-template-columns: 1fr;
+  }
+
+  dd {
+    margin-bottom: 6px;
+  }
+}

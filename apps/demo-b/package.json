@@ -6,18 +6,24 @@
   "scripts": {
     "dev": "vite --port 5174",
     "build": "tsc -b && vite build",
+    "test": "tsx tests/wallet-state.test.ts && tsx tests/wallet-rpc.test.ts && tsx tests/walletconnect.test.ts",
     "typecheck": "tsc -b"
   },
   "dependencies": {
+    "@reown/walletkit": "^1.5.6",
+    "@walletconnect/core": "^2.23.10",
+    "@walletconnect/utils": "^2.23.10",
     "@zkaccount/sdk": "*",
-    "viem": "^2.37.3",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "viem": "^2.37.3"
   },
   "devDependencies": {
+    "@types/node": "^26.3.0",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.5",
     "@vitejs/plugin-react": "6.1.0",
+    "tsx": "^4.23.12",
     "typescript": "5.9.3",
     "vite": "8.2.2"
   }

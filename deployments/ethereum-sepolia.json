@@ -1,0 +1,39 @@
+{
+  "chainId": 11155111,
+  "deployedAt": "2026-08-25",
+  "protocolVersion": "google-nonce-erc1271-walletkit",
+  "compatibleWithCurrentArtifacts": true,
+  "deployer": "0xae6d1975a3a3D73693580A91B688832448881CC3",
+  "deploymentBlock": 11567335,
+  "entryPoint": "0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108",
+  "rootAudience": "0x003058e40c036af1aab38e49c89e0ee26d4d7be8fd6a665f8b37bde5507223d9",
+  "rootClientId": "176685232849-e7govufghrlnprcc7cuijp5eusopci5b.apps.googleusercontent.com",
+  "creForwarder": "0x15fC6ae953E024d975e77382eEeC56A9101f9F88",
+  "creWorkflowOwner": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "googleVerifier": {
+    "address": "0x534837ce36F46b664A0155D00E79C58B8868F3B0",
+    "transactionHash": "0x5fc0b58451d82a31c8864605f2fb0ecbb1f9ad578666ab79b7775d57f967f333"
+  },
+  "googleKeyRegistry": {
+    "address": "0xE95dc39142c5043c7f3Dc530C899Cb9b62910bE2",
+    "transactionHash": "0x70078c3337d599771bda70f3d631d4bf5c6cdf14f0d1e38dbcc7ed485bca11ab"
+  },
+  "googleAccountFactory": {
+    "address": "0x277A014915F95d6f83323435f6822A11DB1a2Cbb",
+    "transactionHash": "0xdae513860e014fadc612ba083e30449e8bf306c52174f0a0d8369a4af2d883a0"
+  },
+  "googleJwtValidator": {
+    "address": "0x3a1fcFfBa1Ec75c6389b2eB729Cd7B42A6f4C21B",
+    "transactionHash": "0x7bd6baa8e1fc4b3f12280605daa172b94478b0f61fd56b2e48ea593e9b00abdf"
+  },
+  "factoryInitializationTransactionHash": "0x60ee4dfa8866d6c7b95ada4fe35292163e86239bf784c37ba4fae4d4fee5dcd2",
+  "creSimulation": {
+    "simulatedAt": "2026-08-25T16:46:01Z",
+    "googleKeyCount": 4,
+    "binaryHash": "ae72bbcd6282f4f19f1e34abb3bc877b22a358de34af634d3be678e81f1e35ca",
+    "configHash": "01d97d5bfe1c4554afc9a279698d610bab71732ac66094c2f0ee8dc273672e2e",
+    "broadcastTransactionHash": "0xa5efda2cbd68920180e959a2eed0c0f1f1bd6f755dcf746fc5ff72fc0fdad345",
+    "liveRegistryUpdated": true,
+    "note": "Local single-node CRE simulation broadcast through the Ethereum Sepolia MockKeystoneForwarder."
+  }
+}

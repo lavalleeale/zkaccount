@@ -54,6 +54,8 @@ contract GoogleAccountTest {
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
     uint256 private constant DEVICE_PRIVATE_KEY = 0xA11CE;
+    uint256 private constant SECP256K1_ORDER =
+        0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141;
     bytes32 private constant IDENTITY = keccak256("google-sub-fixture");
     string private constant ROOT_CLIENT_ID = "root.apps.googleusercontent.com";
     bytes32 private constant GOOGLE_KEY = keccak256("fixture-rsa-key");
@@ -112,6 +114,50 @@ contract GoogleAccountTest {
         (v, r, s) = vm.sign(0xB0B, userOpHash);
         op.signature = abi.encodePacked(uint8(0), r, s, v);
         _assertEq(entryPoint.validate(account, op, userOpHash), 1);
+    }
+
+    function testERC1271AcceptsAuthorizedDeviceSignature() public {
+        _bootstrap(device);
+        bytes32 digest = keccak256("signed-message");
+        bytes memory signature = _sign(DEVICE_PRIVATE_KEY, digest);
+
+        _assertEq(account.isValidSignature(digest, signature), account.ERC1271_MAGIC_VALUE());
+        _assertEq(
+            account.isValidSignature(keccak256("different-message"), signature),
+            account.ERC1271_INVALID_SIGNATURE()
+        );
+    }
+
+    function testERC1271RejectsUnknownAndRevokedDevices() public {
+        _bootstrap(device);
+        bytes32 digest = keccak256("signed-message");
+        _assertEq(
+            account.isValidSignature(digest, _sign(0xB0B, digest)),
+            account.ERC1271_INVALID_SIGNATURE()
+        );
+
+        entryPoint.execute(account, address(account), 0, abi.encodeCall(account.removeDevice, (device)));
+        _assertEq(
+            account.isValidSignature(digest, _sign(DEVICE_PRIVATE_KEY, digest)),
+            account.ERC1271_INVALID_SIGNATURE()
+        );
+    }
+
+    function testERC1271RejectsMalformedInvalidVAndHighSSignatures() public {
+        _bootstrap(device);
+        bytes32 digest = keccak256("signed-message");
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(DEVICE_PRIVATE_KEY, digest);
+
+        _assertEq(account.isValidSignature(digest, hex"1234"), account.ERC1271_INVALID_SIGNATURE());
+        _assertEq(
+            account.isValidSignature(digest, abi.encodePacked(r, s, uint8(29))),
+            account.ERC1271_INVALID_SIGNATURE()
+        );
+        bytes32 highS = bytes32(SECP256K1_ORDER - uint256(s));
+        _assertEq(
+            account.isValidSignature(digest, abi.encodePacked(r, highS, v == 27 ? uint8(28) : uint8(27))),
+            account.ERC1271_INVALID_SIGNATURE()
+        );
     }
 
     function testGoogleProofCannotBeReusedAfterDeviceInstallation() public {
@@ -252,6 +298,11 @@ contract GoogleAccountTest {
         );
     }
 
+    function _sign(uint256 privateKey, bytes32 digest) private returns (bytes memory) {
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, digest);
+        return abi.encodePacked(r, s, v);
+    }
+
     function _googleAddDeviceOp(
         address authorizedDevice,
         bytes32 audience,
@@ -292,5 +343,9 @@ contract GoogleAccountTest {
 
     function _assertEq(uint256 left, uint256 right) private pure {
         require(left == right, "uint mismatch");
+    }
+
+    function _assertEq(bytes4 left, bytes4 right) private pure {
+        require(left == right, "bytes4 mismatch");
     }
 }

@@ -54,8 +54,9 @@
       <p class="effective-date">Effective August 25, 2026</p>
       <p>
         zkAccount Demo B is an experimental, open-source application for recovering and using a
-        smart account on the Base Sepolia test network. This policy explains how the demo handles
-        information when you use Google authentication, a passkey, or the blockchain features.
+        smart account on the selected Base Sepolia or Ethereum Sepolia test network. This policy
+        explains how the demo handles information when you use Google authentication, a passkey, or
+        the blockchain features.
       </p>
 
       <h2>Information the demo accesses</h2>
@@ -75,10 +76,15 @@
         </li>
         <li>
           <strong>Blockchain data.</strong> The demo reads account addresses, balances, authorized
-          device addresses, and transaction status from Base Sepolia. If you submit an operation,
-          its smart-account address, device public address, proof and public inputs, and transaction
-          data are sent to the configured RPC and bundler services and may be recorded publicly
-          onchain.
+          device addresses, and transaction status from the selected Sepolia network. If you submit
+          an operation, its smart-account address, device public address, proof and public inputs,
+          and transaction data are sent to the configured RPC and bundler services and may be
+          recorded publicly onchain.
+        </li>
+        <li>
+          <strong>WalletConnect data.</strong> When you pair with a dapp, the demo receives that
+          dapp's connection and signing requests through WalletConnect's encrypted relay. Requests
+          can contain the dapp origin, transaction details, and messages you are asked to sign.
         </li>
       </ul>
 
@@ -88,8 +94,11 @@
         not intentionally send the full Google ID token or the Google subject identifier to an
         application backend, and it does not operate an account database. Authentication results,
         proof data, and temporary device keys are held in page memory and disappear when the page is
-        reloaded or closed. Demo B may display selected token claims in the page during that session
-        for development transparency.
+        reloaded or closed. Demo B stores only the public smart-account address, configured factory,
+        chain ID, and WalletConnect session data in browser storage so that a returning user can
+        unlock the wallet. It does not store the device private key, Google token, proof, or passkey
+        PRF output. Demo B may display selected token claims in the page during that session for
+        development transparency.
       </p>
       <p>
         A passkey remains under the control of your browser, operating system, authenticator, and
@@ -103,10 +112,10 @@
       <p>
         The demo does not sell personal information or use it for advertising. Information is shared
         only as needed for the features you request: Google provides authentication; browser and
-        authenticator providers manage passkeys; hosting providers deliver the site; configured RPC
-        and ERC-4337 bundler providers process blockchain requests; and the Base Sepolia network
-        publishes submitted transactions. Those parties process information under their own terms
-        and privacy policies.
+        authenticator providers manage passkeys; WalletConnect relays encrypted dapp sessions and
+        requests; hosting providers deliver the site; configured RPC and ERC-4337 bundler providers
+        process blockchain requests; and the selected Sepolia network publishes submitted
+        transactions. Those parties process information under their own terms and privacy policies.
       </p>
       <p>
         The demo does not intentionally use analytics, advertising trackers, or application cookies.
@@ -115,17 +124,17 @@
       <h2>Your choices</h2>
       <p>
         You may use the site without continuing with Google, stop before submitting an onchain
-        operation, close or reload the page to clear session memory, manage Google connections in
-        your Google Account, and manage passkeys through your browser or operating system. Onchain
-        records already submitted cannot be erased.
+        operation, reject or disconnect a dapp session, revoke the local device, manage Google
+        connections in your Google Account, and manage passkeys or site storage through your browser
+        or operating system. Onchain records already submitted cannot be erased.
       </p>
 
       <h2>Security and test-network notice</h2>
       <p>
         The demo minimizes disclosure by processing credentials locally and using a zero-knowledge
-        proof, but no system can guarantee absolute security. Base Sepolia is a public test network.
-        Do not use the demo with real funds or information you are unwilling to expose through
-        public blockchain activity.
+        proof, but no system can guarantee absolute security. Both supported Sepolia networks are
+        public test networks. Do not use the demo with real funds or information you are unwilling
+        to expose through public blockchain activity.
       </p>
 
       <h2>Children</h2>

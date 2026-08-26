@@ -55,7 +55,8 @@ label {
   color: #536b9e;
   font-size: 13px;
 }
-input {
+input,
+select {
   box-sizing: border-box;
   width: 100%;
   border: 1px solid #cbd5e1;
@@ -64,7 +65,8 @@ input {
   color: #17223b;
   background: white;
 }
-input:focus {
+input:focus,
+select:focus {
   border-color: #536b9e;
   outline: 2px solid #dbe5f7;
 }
