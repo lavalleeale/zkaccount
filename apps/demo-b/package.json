@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --port 5174",
     "build": "tsc -b && vite build",
-    "test": "tsx tests/wallet-state.test.ts && tsx tests/wallet-rpc.test.ts && tsx tests/walletconnect.test.ts",
+    "test": "tsx tests/routing.test.ts && tsx tests/wallet-state.test.ts && tsx tests/wallet-rpc.test.ts && tsx tests/walletconnect.test.ts",
     "typecheck": "tsc -b"
   },
   "dependencies": {
@@ -14,6 +14,7 @@
     "@walletconnect/core": "^2.23.10",
     "@walletconnect/utils": "^2.23.10",
     "@zkaccount/sdk": "*",
+    "@zkaccount/ui": "*",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "viem": "^2.37.3"

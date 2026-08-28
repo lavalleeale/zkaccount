@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { formatEther, isAddressEqual, type Address } from "viem";
 import { baseSepolia, sepolia } from "viem/chains";
@@ -11,6 +11,17 @@ import {
   type DeviceKey,
   type PasskeyAuthorizationResult,
 } from "@zkaccount/sdk";
+import {
+  AddressDisplay,
+  AppShell,
+  Card,
+  EmptyState,
+  KeyValue,
+  PageIntro,
+  StatusPanel,
+  TechnicalDetails,
+  type StatusTone,
+} from "@zkaccount/ui";
 import {
   createWalletConnectController,
   describePrompt,
@@ -26,7 +37,13 @@ import {
   saveWalletState,
   type StoredWalletState,
 } from "./wallet-state";
-import "../../demo-a/src/style.css";
+import "@zkaccount/ui/styles.css";
+import {
+  resolveDemoBRoute,
+  walletCompletionCopy,
+  type DemoBRoute,
+  type WalletCompletion,
+} from "./routing";
 import "./wallet.css";
 
 const managerUrl = import.meta.env.VITE_PASSKEY_MANAGER_URL as string | undefined;
@@ -126,11 +143,31 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [pairingUri, setPairingUri] = useState("");
   const [prompt, setPrompt] = useState<WalletPrompt>();
-  const [returnUrl, setReturnUrl] = useState<string>();
+  const [completion, setCompletion] = useState<WalletCompletion>();
   const [sessions, setSessions] = useState<
     Array<{ topic: string; peer: { name: string; url: string } }>
   >([]);
   const [walletConnectReady, setWalletConnectReady] = useState(false);
+  const [route, setRoute] = useState<DemoBRoute>(() => resolveDemoBRoute(window.location.pathname));
+
+  function navigate(next: DemoBRoute) {
+    window.history.pushState(null, "", next);
+    setRoute(next);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function completePrompt(activePrompt: WalletPrompt, outcome: WalletCompletion["outcome"]) {
+    if (walletConnect.current?.hasActivePrompt()) {
+      setStatus("Another WalletConnect request is ready for review.");
+      return;
+    }
+    setCompletion({
+      outcome,
+      kind: activePrompt.kind,
+      returnUrl: activePrompt.peer.redirect?.universal ?? activePrompt.peer.url,
+    });
+    navigate("/complete");
+  }
 
   async function handleAuthorizationResult(
     result: PasskeyAuthorizationResult,
@@ -188,6 +225,7 @@ function App() {
       );
       setBalance(await wallet.getBalance(result.account));
       setStatus("Wallet ready. Your passkey will be requested for each signature.");
+      navigate("/wallet");
     } catch (error) {
       setStatus(errorMessage(error));
     } finally {
@@ -197,18 +235,34 @@ function App() {
 
   useEffect(() => {
     const result = parsePasskeyAuthorizationResult(window.location.search);
-    if (!result) return;
-    window.history.replaceState(null, "", window.location.pathname);
-    const pending = takePendingAuthorization();
-    queueMicrotask(() => void handleAuthorizationResult(result, pending));
+    if (result) {
+      window.history.replaceState(null, "", window.location.pathname);
+      const pending = takePendingAuthorization();
+      queueMicrotask(() => void handleAuthorizationResult(result, pending));
+    } else if (initialStored) {
+      // Public metadata can be checked without invoking the authenticator.
+      queueMicrotask(() => void loadStoredWallet());
+    }
+    // The branch above must be decided from the same read of the URL that
+    // strips it, so a fresh authorization result can never race the stored-
+    // wallet reload for the pre-authorization state it's about to replace.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => setRoute(resolveDemoBRoute(window.location.pathname));
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
   useEffect(() => {
     if (!reownProjectId) return;
     let disposed = false;
     void createWalletConnectController(reownProjectId, network.chain.id, {
-      onPrompt: setPrompt,
+      onPrompt: (nextPrompt) => {
+        setPrompt(nextPrompt);
+        if (nextPrompt) navigate("/request");
+      },
       onSessionsChanged: () =>
         queueMicrotask(() => setSessions(walletConnect.current?.sessions() ?? [])),
       onStatus: setStatus,
@@ -336,7 +390,7 @@ function App() {
     setBusy(true);
     try {
       await walletConnect.current?.approveProposal(activePrompt);
-      setReturnUrl(activePrompt.peer.redirect?.universal ?? activePrompt.peer.url);
+      completePrompt(activePrompt, "approved");
     } catch (error) {
       setStatus(errorMessage(error));
     } finally {
@@ -348,7 +402,7 @@ function App() {
     setBusy(true);
     try {
       await walletConnect.current?.rejectProposal(activePrompt);
-      setReturnUrl(activePrompt.peer.redirect?.universal ?? activePrompt.peer.url);
+      completePrompt(activePrompt, "rejected");
     } catch (error) {
       setStatus(errorMessage(error));
     } finally {
@@ -378,7 +432,7 @@ function App() {
         onStatus: setStatus,
       });
       await walletConnect.current.approveRequest(activePrompt, result);
-      setReturnUrl(activePrompt.peer.redirect?.universal ?? activePrompt.peer.url);
+      completePrompt(activePrompt, "approved");
     } catch (error) {
       setStatus(errorMessage(error));
     } finally {
@@ -390,7 +444,7 @@ function App() {
     setBusy(true);
     try {
       await walletConnect.current?.rejectRequest(activePrompt);
-      setReturnUrl(activePrompt.peer.redirect?.universal ?? activePrompt.peer.url);
+      completePrompt(activePrompt, "rejected");
     } catch (error) {
       setStatus(errorMessage(error));
     } finally {
@@ -419,17 +473,11 @@ function App() {
     }
   }
 
-  return (
-    <main>
-      <p className="eyebrow">WalletConnect wallet · Demo B</p>
-      <h1>zkAccount Wallet</h1>
-      <p>
-        Create a passkey, authorize it with Google on the passkey manager, then sign with it here.
-      </p>
-
-      <label htmlFor="network">Network</label>
+  const networkControl = (
+    <div className="network-control">
+      <label htmlFor="wallet-network">Network</label>
       <select
-        id="network"
+        id="wallet-network"
         value={selectedNetworkKey}
         disabled={busy || sessions.length > 0 || prompt !== undefined}
         onChange={(event) => {
@@ -440,160 +488,340 @@ function App() {
         <option value="base-sepolia">Base Sepolia</option>
         <option value="ethereum-sepolia">Ethereum Sepolia</option>
       </select>
-      {(sessions.length > 0 || prompt) && (
-        <small>
-          Disconnect active dapps and resolve pending requests before switching networks.
-        </small>
+    </div>
+  );
+  const completionCopy = completion ? walletCompletionCopy(completion) : undefined;
+
+  return (
+    <AppShell
+      product="zkAccount"
+      context="Passkey wallet"
+      network={network.chain.name}
+      currentPath={route === "/wc" ? "/connections" : route}
+      onNavigate={(href) => navigate(resolveDemoBRoute(href))}
+      nav={[
+        { href: "/wallet", label: "Wallet" },
+        { href: "/connections", label: "Connections" },
+      ]}
+    >
+      {(route === "/" || route === "/wallet") && !authorized && (
+        <div className="wallet-home">
+          <Card className="hero-card">
+            <div>
+              <span className="eyebrow">Portable smart wallet</span>
+              <h1>One account. Every app.</h1>
+              <p className="muted">
+                Create a passkey for this app, authorize it privately with Google, and use the same
+                self-custodial account anywhere zkAccount is supported.
+              </p>
+              <div className="actions">
+                <button
+                  className="primary-button blue"
+                  disabled={busy}
+                  onClick={() => void createPasskeyAndAuthorize()}
+                >
+                  Create my passkey
+                </button>
+                {stored && (
+                  <button
+                    className="secondary-button"
+                    disabled={busy}
+                    onClick={() => void loadStoredWallet()}
+                  >
+                    Load saved wallet
+                  </button>
+                )}
+              </div>
+              <div style={{ marginTop: 20 }}>
+                <StatusPanel tone={statusTone(status, busy)}>{status}</StatusPanel>
+              </div>
+              <div className="config-list">
+                {!managerUrl && (
+                  <span className="fine-print">Passkey manager URL is not configured.</span>
+                )}
+                {!bundlerUrl && (
+                  <span className="fine-print">EntryPoint v0.8 bundler URL is not configured.</span>
+                )}
+              </div>
+            </div>
+            <div className="wallet-orbit">
+              <img src="/logo.svg" alt="zkAccount" />
+            </div>
+          </Card>
+          <div className="grid three" style={{ marginTop: 18 }}>
+            <Card title="Google recoverable" eyebrow="Identity">
+              <p className="muted">Resolve the same account without exporting a seed phrase.</p>
+            </Card>
+            <Card title="Passkey secured" eyebrow="Every action">
+              <p className="muted">Your authenticator approves each message and transaction.</p>
+            </Card>
+            <Card title="Private onchain" eyebrow="Zero knowledge">
+              <p className="muted">Google identity is proved locally, never published.</p>
+            </Card>
+          </div>
+        </div>
       )}
 
-      <section>
-        <strong>{authorized ? "Wallet ready" : stored ? "Load wallet" : "Create a passkey"}</strong>
-        {account && <span>{account}</span>}
-        {account && (
-          <span>
-            Balance: {formatEther(balance)} {network.chain.name} ETH
-          </span>
-        )}
-        {device && <span>Passkey device: {device.address}</span>}
-        <div className="actions compact">
-          {stored && (
-            <button disabled={busy} onClick={() => void loadStoredWallet()}>
-              Load stored wallet
-            </button>
+      {authorized && (route === "/wallet" || route === "/") && (
+        <div className="wallet-home">
+          <PageIntro
+            eyebrow="Wallet ready"
+            title="Your portable account."
+            description="This origin’s passkey is authorized. Connect a dapp or approve a fresh user-verified signature."
+            aside={networkControl}
+          />
+          <Card className="hero-card">
+            <div>
+              <span className="eyebrow">Available balance</span>
+              <div className="balance">
+                {formatEther(balance)} <small>ETH</small>
+              </div>
+              <p className="muted">{network.chain.name}</p>
+              {account && <AddressDisplay label="Smart account" value={account} />}
+              <div className="actions">
+                <button className="primary-button blue" onClick={() => navigate("/connections")}>
+                  Connect a dapp
+                </button>
+                <button className="secondary-button" disabled={busy} onClick={() => void refresh()}>
+                  Refresh
+                </button>
+              </div>
+            </div>
+            <div className="stack">
+              <Card title="Passkey active" eyebrow="Security">
+                <p className="muted">Every signature opens a fresh authenticator prompt.</p>
+                <span className="pill">User verified</span>
+              </Card>
+              <KeyValue label="Connected dapps" value={sessions.length} />
+            </div>
+          </Card>
+          <div style={{ marginTop: 18 }}>
+            <StatusPanel tone={statusTone(status, busy)}>{status}</StatusPanel>
+          </div>
+          {!bundlerUrl && (
+            <StatusPanel tone="warning">
+              Configure an EntryPoint v0.8 bundler URL to submit onchain actions.
+            </StatusPanel>
           )}
-          <button
-            disabled={busy}
-            className="secondary"
-            onClick={() => void createPasskeyAndAuthorize()}
-          >
-            Create passkey
-          </button>
-          {authorized && (
-            <button disabled={busy} className="secondary" onClick={() => void refresh()}>
-              Refresh
-            </button>
-          )}
-          {authorized && (
-            <button disabled={busy || !bundlerUrl} className="danger" onClick={revokeLocalDevice}>
-              Revoke this device
-            </button>
+          {device && (
+            <TechnicalDetails summary="Wallet security and device details">
+              <KeyValue label="Passkey device" value={device.address} mono />
+              <KeyValue label="RP ID" value={device.rpId} />
+              <button
+                className="danger-button"
+                disabled={busy || !bundlerUrl}
+                onClick={() => void revokeLocalDevice()}
+              >
+                Revoke this device
+              </button>
+            </TechnicalDetails>
           )}
         </div>
-      </section>
+      )}
 
-      <section>
-        <strong>Connect a dapp</strong>
-        <label htmlFor="pairing-uri">WalletConnect URI</label>
-        <input
-          id="pairing-uri"
-          value={pairingUri}
-          onChange={(event) => setPairingUri(event.target.value)}
-          placeholder="wc:..."
-        />
-        <div className="actions compact">
-          <button
-            disabled={busy || !walletConnectReady || !pairingUri.trim()}
-            onClick={() => void pair()}
-          >
-            Pair
-          </button>
+      {(route === "/connections" || route === "/wc") && (
+        <div>
+          <PageIntro
+            eyebrow="WalletConnect"
+            title="Connect with confidence."
+            description="Pair with an existing dapp, review exactly what it requests, and approve with your passkey."
+            aside={networkControl}
+          />
+          <div className="split">
+            <Card title="Pair a dapp" eyebrow="New connection">
+              <label htmlFor="pairing-uri">WalletConnect URI</label>
+              <div className="pair-field">
+                <input
+                  id="pairing-uri"
+                  value={pairingUri}
+                  onChange={(event) => setPairingUri(event.target.value)}
+                  placeholder="wc:…"
+                />
+                <button
+                  className="primary-button blue"
+                  disabled={busy || !walletConnectReady || !pairingUri.trim()}
+                  onClick={() => void pair()}
+                >
+                  Pair
+                </button>
+              </div>
+              <p className="fine-print">
+                AppKit can open this wallet at <code>{window.location.origin}/wc?uri=…</code>.
+                Pairing can begin while locked, but approval requires an authorized passkey.
+              </p>
+              <StatusPanel tone={statusTone(status, busy)}>{status}</StatusPanel>
+            </Card>
+            <Card title="Active connections" eyebrow="Sessions">
+              <div className="connection-count">{sessions.length}</div>
+              {sessions.length === 0 ? (
+                <p className="muted">No dapps are connected yet.</p>
+              ) : (
+                <ul className="session-list">
+                  {sessions.map((session) => (
+                    <li className="session-row" key={session.topic}>
+                      <span>
+                        <b>{session.peer.name}</b>
+                        <small>{session.peer.url}</small>
+                      </span>
+                      <button
+                        className="secondary-button"
+                        disabled={busy}
+                        onClick={() => void walletConnect.current?.disconnect(session.topic)}
+                      >
+                        Disconnect
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+          </div>
+          {!reownProjectId && (
+            <div style={{ marginTop: 18 }}>
+              <StatusPanel tone="warning">
+                Set VITE_REOWN_PROJECT_ID to enable WalletConnect.
+              </StatusPanel>
+            </div>
+          )}
         </div>
-        <small>
-          AppKit can open this wallet at <code>{window.location.origin}/wc?uri=...</code>. Pairing
-          may happen while locked, but approval requires the passkey.
-        </small>
-      </section>
-
-      {prompt && (
-        <section className={prompt.verification.isScam ? "wallet-prompt warning" : "wallet-prompt"}>
-          <strong>Approval required</strong>
-          <dl>
-            {Object.entries(describePrompt(prompt)).map(([label, value]) => (
-              <React.Fragment key={label}>
-                <dt>{label}</dt>
-                <dd>{value || "—"}</dd>
-              </React.Fragment>
-            ))}
-          </dl>
-          {!authorized && <small>Load the authorized passkey before approving.</small>}
-          <div className="actions compact">
-            <button
-              disabled={busy || !authorized}
-              onClick={() =>
-                void (prompt.kind === "session_proposal"
-                  ? approveProposal(prompt)
-                  : approveRequest(prompt))
-              }
-            >
-              Approve
-            </button>
-            <button
-              disabled={busy}
-              className="danger"
-              onClick={() =>
-                void (prompt.kind === "session_proposal"
-                  ? rejectProposal(prompt)
-                  : rejectRequest(prompt))
-              }
-            >
-              Reject
-            </button>
-          </div>
-        </section>
       )}
 
-      {returnUrl && !prompt && (
-        <section>
-          <strong>Request complete</strong>
-          <span>Return to the dapp or close this wallet tab.</span>
-          <div className="actions compact">
-            <a className="button-link" href={returnUrl} rel="noreferrer">
-              Return to dapp
-            </a>
-            <button className="secondary" onClick={() => window.close()}>
-              Close wallet
-            </button>
-          </div>
-        </section>
+      {route === "/request" && (
+        <div className="journey">
+          <PageIntro
+            eyebrow="Approval required"
+            title="Review before signing."
+            description="Confirm the dapp, origin, network, and requested method. A passkey prompt appears only after you approve."
+          />
+          {!prompt ? (
+            <Card>
+              <EmptyState
+                title="No active request"
+                action={
+                  <button className="secondary-button" onClick={() => navigate("/connections")}>
+                    View connections
+                  </button>
+                }
+              >
+                The WalletConnect request may have been completed or expired.
+              </EmptyState>
+            </Card>
+          ) : (
+            <Card
+              className={prompt.verification.isScam ? "wallet-prompt warning" : "wallet-prompt"}
+            >
+              <div className="request-icon">↗</div>
+              {prompt.verification.isScam && (
+                <StatusPanel tone="error" label="Security warning">
+                  WalletConnect verification marked this origin as suspicious. Reject unless you are
+                  certain it is safe.
+                </StatusPanel>
+              )}
+              <div className="prompt-grid" style={{ marginTop: 20 }}>
+                {Object.entries(describePrompt(prompt)).map(([label, value]) => (
+                  <KeyValue
+                    key={label}
+                    label={label}
+                    value={value || "—"}
+                    mono={label === "Origin"}
+                  />
+                ))}
+              </div>
+              {!authorized && (
+                <div style={{ marginTop: 18 }}>
+                  <StatusPanel tone="warning">
+                    Load the authorized passkey before approving.
+                  </StatusPanel>
+                </div>
+              )}
+              <div className="actions">
+                <button
+                  className="primary-button blue"
+                  disabled={busy || !authorized}
+                  onClick={() =>
+                    void (prompt.kind === "session_proposal"
+                      ? approveProposal(prompt)
+                      : approveRequest(prompt))
+                  }
+                >
+                  {prompt.kind === "session_proposal" ? "Connect dapp" : "Approve with passkey"}
+                </button>
+                <button
+                  className="danger-button"
+                  disabled={busy}
+                  onClick={() =>
+                    void (prompt.kind === "session_proposal"
+                      ? rejectProposal(prompt)
+                      : rejectRequest(prompt))
+                  }
+                >
+                  Reject
+                </button>
+              </div>
+              <div style={{ marginTop: 18 }}>
+                <StatusPanel tone={statusTone(status, busy)}>{status}</StatusPanel>
+              </div>
+            </Card>
+          )}
+        </div>
       )}
 
-      <section>
-        <strong>Connected dapps ({sessions.length})</strong>
-        {sessions.length === 0 && <span>No active WalletConnect sessions</span>}
-        {sessions.map((session) => (
-          <div className="session-row" key={session.topic}>
-            <span>
-              {session.peer.name}
-              <small>{session.peer.url}</small>
-            </span>
-            <button
-              disabled={busy}
-              className="secondary"
-              onClick={() => void walletConnect.current?.disconnect(session.topic)}
-            >
-              Disconnect
-            </button>
-          </div>
-        ))}
-      </section>
-
-      <section>
-        <strong>Status</strong>
-        <span>{status}</span>
-      </section>
-
-      {!managerUrl && <small>Set VITE_PASSKEY_MANAGER_URL to the passkey manager's origin.</small>}
-      {!reownProjectId && <small>Set VITE_REOWN_PROJECT_ID to enable WalletConnect.</small>}
-      {!bundlerUrl && <small>Configure a {network.chain.name} EntryPoint v0.8 bundler URL.</small>}
-      <footer className="legal-links">
-        <a href="/privacy.html">Privacy policy</a>
-      </footer>
-    </main>
+      {route === "/complete" && (
+        <div className="journey">
+          <PageIntro
+            eyebrow="Request complete"
+            title={completionCopy?.title ?? "No completed request."}
+            description={
+              completionCopy?.description ??
+              "Return to your connections to review a WalletConnect request."
+            }
+          />
+          <Card className="hero-card centered">
+            <div className="completion-mark" data-outcome={completion?.outcome ?? "idle"}>
+              {completion ? (completion.outcome === "rejected" ? "×" : "✓") : "—"}
+            </div>
+            <h2>{completionCopy?.detail ?? "Nothing was approved"}</h2>
+            <p className="muted">
+              {completion?.outcome === "rejected"
+                ? "Your wallet remains unchanged."
+                : "Your account stayed in your hands."}
+            </p>
+            <div className="actions">
+              {completion?.returnUrl && (
+                <a className="primary-button blue" href={completion.returnUrl} rel="noreferrer">
+                  Return to dapp
+                </a>
+              )}
+              {!completion && (
+                <button className="primary-button blue" onClick={() => navigate("/connections")}>
+                  View connections
+                </button>
+              )}
+              <button className="secondary-button" onClick={() => window.close()}>
+                Close wallet
+              </button>
+            </div>
+            <TechnicalDetails summary="View completion status">
+              <StatusPanel tone={statusTone(status, false)}>{status}</StatusPanel>
+            </TechnicalDetails>
+          </Card>
+        </div>
+      )}
+    </AppShell>
   );
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function statusTone(message: string, busy: boolean): StatusTone {
+  if (busy) return "busy";
+  const lower = message.toLowerCase();
+  if (/(fail|error|reject|expired|no stored|not found)/.test(lower)) return "error";
+  if (/(configure|required|need|locked)/.test(lower)) return "warning";
+  if (/(ready|authorized|connected|complete|completed)/.test(lower)) return "success";
+  return "idle";
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

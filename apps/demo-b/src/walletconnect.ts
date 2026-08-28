@@ -141,6 +141,10 @@ export class DemoBWalletConnectController {
     }));
   }
 
+  hasActivePrompt(): boolean {
+    return this.active !== undefined;
+  }
+
   restorePendingRequest(requestId: number, sessionTopic: string): boolean {
     const request = this.client
       .getPendingSessionRequests()

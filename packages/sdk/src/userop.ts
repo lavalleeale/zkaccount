@@ -21,10 +21,13 @@ import type { GoogleProof } from "./prover";
 export const BASE_SEPOLIA_CHAIN_ID = 84_532;
 export const ENTRY_POINT_V08 = getAddress("0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108");
 export const BASE_SEPOLIA_FACTORY_DEPLOYMENT_BLOCK = 45_976_355n;
+export const LOG_QUERY_BLOCK_RANGE = 5_000n;
+export const LOG_QUERY_CONCURRENCY = 8;
 
 const factoryAbi = parseAbi([
   "function createAccount(bytes32 identity) returns (address account)",
   "function getAddress(bytes32 identity) view returns (address)",
+  "event AccountCreated(bytes32 indexed identity, address indexed account)",
 ]);
 const accountAbi = parseAbi([
   "function execute(address target, uint256 value, bytes data)",
@@ -247,6 +250,22 @@ export class GoogleLoginRaceError extends Error {
   }
 }
 
+interface DeviceSetLogEntry {
+  device: Address;
+  enabled: boolean;
+  rpId: string;
+}
+
+interface DeviceQueuedLogEntry {
+  device: Address;
+  rpId: string;
+}
+
+interface AccountEventCacheEntry<T> {
+  toBlock: bigint;
+  events: T[];
+}
+
 export class Google4337Client {
   readonly chain: Chain;
   readonly factory: Address;
@@ -254,6 +273,20 @@ export class Google4337Client {
   readonly factoryDeploymentBlock: bigint;
   readonly bundler: JsonRpcBundlerClient;
   readonly publicClient;
+
+  // Populated lazily from the factory's AccountCreated event and kept for the
+  // client's lifetime: an account's deployment block never changes, so this
+  // lets device-event scans start from it instead of factoryDeploymentBlock.
+  private readonly deploymentBlockCache = new Map<Address, bigint>();
+  // Device-event scans are incremental: each cache entry remembers the last
+  // block scanned and the events accumulated so far, so a repeated call only
+  // queries the blocks added since the previous call instead of re-scanning
+  // the account's entire history every time.
+  private readonly deviceSetCache = new Map<Address, AccountEventCacheEntry<DeviceSetLogEntry>>();
+  private readonly deviceQueuedCache = new Map<
+    Address,
+    AccountEventCacheEntry<DeviceQueuedLogEntry>
+  >();
 
   constructor(options: Google4337ClientOptions) {
     this.chain = options.chain ?? baseSepolia;
@@ -332,19 +365,12 @@ export class Google4337Client {
 
   async listAuthorizedDevices(account: Address): Promise<AuthorizedDevice[]> {
     if (!(await this.isDeployed(account))) return [];
-    const logs = await this.publicClient.getContractEvents({
-      address: account,
-      abi: accountAbi,
-      eventName: "DeviceSet",
-      fromBlock: this.factoryDeploymentBlock,
-      toBlock: "latest",
-      strict: true,
-    });
-    const events: Array<{ device: Address; enabled: boolean; rpId: string }> = [];
-    for (const log of logs) {
-      const { device, enabled, rpId } = log.args;
-      events.push({ device, enabled, rpId });
-    }
+    const events = await this.scanAccountEvents(
+      account,
+      "DeviceSet",
+      this.deviceSetCache,
+      (args) => ({ device: args.device, enabled: args.enabled, rpId: args.rpId }),
+    );
     return reduceAuthorizedDevices(events);
   }
 
@@ -353,16 +379,14 @@ export class Google4337Client {
   /// devices that have since been approved or cancelled are excluded.
   async listPendingDevices(account: Address): Promise<PendingDeviceInfo[]> {
     if (!(await this.isDeployed(account))) return [];
-    const logs = await this.publicClient.getContractEvents({
-      address: account,
-      abi: accountAbi,
-      eventName: "DeviceQueued",
-      fromBlock: this.factoryDeploymentBlock,
-      toBlock: "latest",
-      strict: true,
-    });
+    const events = await this.scanAccountEvents(
+      account,
+      "DeviceQueued",
+      this.deviceQueuedCache,
+      (args) => ({ device: args.device, rpId: args.rpId }),
+    );
     const seen = new Map<Address, string>();
-    for (const log of logs) seen.set(log.args.device, log.args.rpId);
+    for (const event of events) seen.set(event.device, event.rpId);
     const pending = await Promise.all(
       [...seen.entries()].map(async ([device, rpId]) => {
         const info = await this.getPendingDevice(account, device);
@@ -372,6 +396,67 @@ export class Google4337Client {
     return pending
       .filter((entry): entry is PendingDeviceInfo => entry !== undefined)
       .sort((left, right) => left.readyAt - right.readyAt);
+  }
+
+  /// Fetches an account's `eventName` logs, using and updating `cache` so
+  /// repeated calls only query the blocks added since the previous call
+  /// instead of re-scanning the account's full history every time.
+  private async scanAccountEvents<T>(
+    account: Address,
+    eventName: "DeviceSet" | "DeviceQueued",
+    cache: Map<Address, AccountEventCacheEntry<T>>,
+    mapArgs: (args: { device: Address; enabled: boolean; rpId: string }) => T,
+  ): Promise<T[]> {
+    const latestBlock = await this.publicClient.getBlockNumber();
+    const cached = cache.get(account);
+    const fromBlock = cached
+      ? cached.toBlock + 1n
+      : await this.getDeploymentBlock(account, latestBlock);
+    const events = cached ? [...cached.events] : [];
+    if (fromBlock <= latestBlock) {
+      const ranges = blockRangeChunks(fromBlock, latestBlock);
+      const chunks = await mapWithConcurrency(ranges, LOG_QUERY_CONCURRENCY, (range) =>
+        this.publicClient.getContractEvents({
+          address: account,
+          abi: accountAbi,
+          eventName,
+          fromBlock: range.fromBlock,
+          toBlock: range.toBlock,
+          strict: true,
+        }),
+      );
+      for (const logs of chunks) {
+        for (const log of logs) {
+          events.push(mapArgs(log.args as { device: Address; enabled: boolean; rpId: string }));
+        }
+      }
+    }
+    cache.set(account, { toBlock: latestBlock, events });
+    return events;
+  }
+
+  /// Resolves and caches the block the account was created in, using the
+  /// factory's AccountCreated event so device-event scans for a long-lived
+  /// factory start near the account's own history instead of walking every
+  /// block back to the factory's own deployment.
+  private async getDeploymentBlock(account: Address, latestBlock: bigint): Promise<bigint> {
+    const cached = this.deploymentBlockCache.get(account);
+    if (cached !== undefined) return cached;
+    const ranges = blockRangeChunks(this.factoryDeploymentBlock, latestBlock);
+    const chunks = await mapWithConcurrency(ranges, LOG_QUERY_CONCURRENCY, (range) =>
+      this.publicClient.getContractEvents({
+        address: this.factory,
+        abi: factoryAbi,
+        eventName: "AccountCreated",
+        args: { account },
+        fromBlock: range.fromBlock,
+        toBlock: range.toBlock,
+        strict: true,
+      }),
+    );
+    const deploymentBlock = chunks.flat()[0]?.blockNumber ?? this.factoryDeploymentBlock;
+    this.deploymentBlockCache.set(account, deploymentBlock);
+    return deploymentBlock;
   }
 
   async authorizeDevice(
@@ -678,6 +763,38 @@ export function reduceAuthorizedDevices(
   return [...active.values()].sort((left, right) => left.rpId.localeCompare(right.rpId));
 }
 
+export function blockRangeChunks(
+  fromBlock: bigint,
+  toBlock: bigint,
+  rangeSize: bigint = LOG_QUERY_BLOCK_RANGE,
+): Array<{ fromBlock: bigint; toBlock: bigint }> {
+  if (rangeSize <= 0n) throw new Error("Log query block range must be positive");
+  const ranges: Array<{ fromBlock: bigint; toBlock: bigint }> = [];
+  for (let start = fromBlock; start <= toBlock; start += rangeSize) {
+    const end = start + rangeSize - 1n;
+    ranges.push({ fromBlock: start, toBlock: end < toBlock ? end : toBlock });
+  }
+  return ranges;
+}
+
+/// Runs `fn` over `items` with at most `concurrency` calls in flight at once,
+/// preserving input order in the returned array.
+export async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    for (let index = next++; index < items.length; index = next++) {
+      results[index] = await fn(items[index]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  return results;
+}
+
 export function googleSignature(
   proof: GoogleProof,
   device: Pick<PublicDeviceKey, "publicKeyX" | "publicKeyY" | "rpId">,
@@ -705,7 +822,8 @@ export function googleSignature(
 function dummyDeviceSignature(device: Pick<DeviceKey, "address" | "rpIdHash">): Hex {
   const encodedDevice = encodeAbiParameters([{ type: "address" }], [device.address]);
   const authenticatorData = concat([device.rpIdHash, "0x05", `0x${"00".repeat(4)}`]);
-  const clientDataJSON = '{"type":"webauthn.get","challenge":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","origin":"https://example.invalid"}';
+  const clientDataJSON =
+    '{"type":"webauthn.get","challenge":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","origin":"https://example.invalid"}';
   const typeIndex = clientDataJSON.indexOf('"type":"webauthn.get"');
   const challengeIndex = clientDataJSON.indexOf('"challenge":"');
   const encodedAssertion = encodeAbiParameters(

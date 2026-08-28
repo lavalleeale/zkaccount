@@ -3,6 +3,7 @@ import type { IWalletKit, WalletKitTypes } from "@reown/walletkit";
 import { getAddress } from "viem";
 import {
   DemoBWalletConnectController,
+  type SessionRequestPrompt,
   type WalletConnectCallbacks,
   type WalletPrompt,
 } from "../src/walletconnect";
@@ -147,6 +148,16 @@ mock.emit("session_request", {
 });
 await new Promise((resolve) => setTimeout(resolve, 0));
 assert.equal(mock.responses.length, 2);
+
+mock.emit("session_request", { ...request, id: 5 });
+mock.emit("session_request", { ...request, id: 6 });
+assert.equal(controller.hasActivePrompt(), true);
+assert.equal(activePrompt?.kind, "session_request");
+await controller.approveRequest(activePrompt as SessionRequestPrompt, "0xfirst");
+assert.equal(controller.hasActivePrompt(), true);
+assert.equal((activePrompt as SessionRequestPrompt).event.id, 6);
+await controller.rejectRequest(activePrompt as SessionRequestPrompt);
+assert.equal(controller.hasActivePrompt(), false);
 
 await controller.disconnect("topic");
 assert.equal(mock.disconnected.length, 1);

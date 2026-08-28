@@ -21,6 +21,26 @@ import {
   type GoogleProof,
   type PendingDeviceInfo,
 } from "@zkaccount/sdk";
+import {
+  AddressDisplay,
+  AppShell,
+  Card,
+  EmptyState,
+  KeyValue,
+  PageIntro,
+  StatusPanel,
+  Steps,
+  TechnicalDetails,
+  type StatusTone,
+} from "@zkaccount/ui";
+import "@zkaccount/ui/styles.css";
+import {
+  authorizationCompletionCopy,
+  authorizationStep,
+  resolveAuthorizationPhase,
+  type AuthorizationOutcome,
+} from "./authorization-state";
+import { resolveDemoARoute, type DemoARoute } from "./routing";
 import "./style.css";
 
 const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
@@ -159,6 +179,7 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [request, setRequest] = useState<PasskeyAuthorizationRequest>();
   const [returnUrl, setReturnUrl] = useState<string>();
+  const [authorizationOutcome, setAuthorizationOutcome] = useState<AuthorizationOutcome>();
   const [pendingDevice, setPendingDevice] = useState<PendingDeviceState>();
   const [dashboardStatus, setDashboardStatus] = useState("");
   const [dashboardBusy, setDashboardBusy] = useState(false);
@@ -168,6 +189,10 @@ function App() {
   const [dashboardPendingDevices, setDashboardPendingDevices] = useState<PendingDeviceInfo[]>([]);
   const [resolvingPendingDevice, setResolvingPendingDevice] = useState<Address>();
   const [signingIn, setSigningIn] = useState(false);
+  const [requestChecked, setRequestChecked] = useState(false);
+  const [route, setRoute] = useState<DemoARoute>(() =>
+    resolveDemoARoute(window.location.pathname, window.location.search),
+  );
 
   useEffect(() => {
     void parsePasskeyAuthorizationRequest(
@@ -178,8 +203,37 @@ function App() {
       .catch((error: unknown) => {
         if (window.location.search)
           setStatus(error instanceof Error ? error.message : String(error));
-      });
+      })
+      .finally(() => setRequestChecked(true));
   }, []);
+
+  useEffect(() => {
+    const onPopState = () =>
+      setRoute(resolveDemoARoute(window.location.pathname, window.location.search));
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  useEffect(() => {
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (!busy && !dashboardBusy) return;
+      event.preventDefault();
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+    return () => window.removeEventListener("beforeunload", beforeUnload);
+  }, [busy, dashboardBusy]);
+
+  function navigate(next: string) {
+    if (
+      (busy || dashboardBusy) &&
+      !window.confirm("An operation is still running. Leave this screen?")
+    )
+      return;
+    const target = resolveDemoARoute(next, "");
+    window.history.pushState(null, "", target);
+    setRoute(target);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   async function approveRequest() {
     if (!request) return;
@@ -190,6 +244,7 @@ function App() {
 
   function rejectRequest() {
     if (!request) return;
+    setAuthorizationOutcome("rejected");
     setReturnUrl(
       createPasskeyResultUrl(request.callback, {
         status: "rejected",
@@ -262,7 +317,9 @@ function App() {
           setBalance(nextBalance);
           setAuthorized(true);
           rememberAuthorizedDevice(predicted, localDevice);
-          setStatus("Local device is authorized (used the cached Google identity, no sign-in needed).");
+          setStatus(
+            "Local device is authorized (used the cached Google identity, no sign-in needed).",
+          );
           return;
         }
       }
@@ -307,6 +364,7 @@ function App() {
       const message = error instanceof Error ? error.message : String(error);
       setStatus(message);
       if (request) {
+        setAuthorizationOutcome("failed");
         setReturnUrl(
           createPasskeyResultUrl(request.callback, {
             status: "failed",
@@ -351,6 +409,7 @@ function App() {
       const message = error instanceof Error ? error.message : String(error);
       setStatus(message);
       if (request) {
+        setAuthorizationOutcome("failed");
         setReturnUrl(
           createPasskeyResultUrl(request.callback, {
             status: "failed",
@@ -367,6 +426,7 @@ function App() {
 
   function returnToRequestingApp(accountAddress: Address, deviceAddress: Address) {
     if (!request) return;
+    setAuthorizationOutcome("approved");
     setReturnUrl(
       createPasskeyResultUrl(request.callback, {
         status: "approved",
@@ -419,12 +479,7 @@ function App() {
     }
     setBusy(true);
     try {
-      await wallet.approveDevice(
-        pendingDevice.account,
-        approver,
-        pendingDevice.device,
-        setStatus,
-      );
+      await wallet.approveDevice(pendingDevice.account, approver, pendingDevice.device, setStatus);
       rememberAuthorizedDevice(pendingDevice.account, device);
       await refresh(pendingDevice.account, device);
       setPendingDevice(undefined);
@@ -645,33 +700,25 @@ function App() {
     }
   }
 
-  return (
-    <>
-      <header className="topbar">
-        <div className="topbar-inner">
-          <span className="wordmark">
-            <span className="wordmark-mark">
-              <img src="/logo.svg" alt="" />
-            </span>
-            zkAccount
-          </span>
-          <span className="network-pill">
-            <span className="dot" />
-            {network.chain.name}
-          </span>
-        </div>
-      </header>
-      <main>
-      <p className="eyebrow">Independent origin · Demo A</p>
-      <h1>Google → ERC-4337</h1>
-      <p>
-        Authenticate, prove the Google credential locally, then authorize this origin's passkey.
-      </p>
-      <label htmlFor="network">Network</label>
+  const authorizationPhase = resolveAuthorizationPhase({
+    hasDevice: device !== undefined,
+    hasLogin: login !== undefined,
+    hasProof: proof !== undefined,
+    authorized,
+    pending: pendingDevice !== undefined,
+    complete: returnUrl !== undefined,
+    signingIn,
+  });
+  const authorizationCopy = authorizationOutcome
+    ? authorizationCompletionCopy(authorizationOutcome)
+    : undefined;
+  const networkControl = (
+    <div className="network-control">
+      <label htmlFor={`network-${route.slice(1) || "home"}`}>Network</label>
       <select
-        id="network"
+        id={`network-${route.slice(1) || "home"}`}
         value={selectedNetworkKey}
-        disabled={requestedNetworkKey !== undefined}
+        disabled={requestedNetworkKey !== undefined || busy || dashboardBusy}
         onChange={(event) => {
           window.localStorage.setItem(NETWORK_KEY, event.target.value);
           window.location.reload();
@@ -680,244 +727,490 @@ function App() {
         <option value="base-sepolia">Base Sepolia</option>
         <option value="ethereum-sepolia">Ethereum Sepolia</option>
       </select>
-      {requestedNetworkKey !== undefined && (
-        <small>Network is set by the requesting app's chain ID and can't be changed here.</small>
-      )}
-      <div className="actions">
-        {request && !returnUrl && (
-          <button disabled={busy} onClick={() => void approveRequest()}>
-            Approve requested passkey
-          </button>
-        )}
-        {!request && (
-          <>
-            <button disabled={busy} onClick={() => void loadPasskey(false)}>
-              Load stored passkey
-            </button>
-            <button disabled={busy} className="secondary" onClick={() => void loadPasskey(true)}>
-              Create passkey
-            </button>
-          </>
-        )}
-        {proof && !authorized && (
-          <button disabled={busy || !bundlerUrl} onClick={authorizeDevice}>
-            Deploy / authorize device
-          </button>
-        )}
-        {account && (
-          <button disabled={busy} className="secondary" onClick={() => void refresh()}>
-            Refresh account
-          </button>
-        )}
-        {authorized && (
-          <button disabled={busy || !bundlerUrl} onClick={sendSelfTransaction}>
-            Send 0 ETH self-transaction
-          </button>
-        )}
-        {authorized && (
-          <button disabled={busy || !bundlerUrl} className="danger" onClick={revokeLocalDevice}>
-            Revoke this device
-          </button>
-        )}
-        {authorized && (
-          <button disabled={busy || !bundlerUrl} className="danger" onClick={() => void revokeAllLocalDevices()}>
-            Revoke all devices
-          </button>
-        )}
-      </div>
-      <div ref={button} className={`google-button${signingIn ? " visible" : ""}`} />
-      <div className="status-banner" data-tone={statusTone(status, busy)}>
-        <span className="status-icon" />
-        <div className="status-banner-body">
-          <strong>Status</strong>
-          <span>{status}</span>
-        </div>
-      </div>
-      {request && (
-        <section>
-          <strong>Incoming passkey request</strong>
-          <span>RP ID: {request.rpId}</span>
-          <span>Callback: {request.callback.host}</span>
-          <span>Device: {request.device.address}</span>
-          <span>Chain: {request.chainId}</span>
-          <small>Review this request before continuing with Google.</small>
-          {!returnUrl && (
-            <div className="actions compact">
-              <button disabled={busy} className="danger" onClick={rejectRequest}>
-                Reject
+    </div>
+  );
+
+  return (
+    <AppShell
+      product="zkAccount"
+      context="Passkey manager"
+      network={network.chain.name}
+      currentPath={route}
+      onNavigate={navigate}
+      nav={[
+        { href: "/", label: "Home" },
+        { href: "/devices", label: "Devices" },
+        { href: "/lab", label: "Lab" },
+      ]}
+    >
+      {route === "/" && (
+        <div className="manager-home stack">
+          <Card className="hero-card">
+            <span className="eyebrow">Private identity · portable account</span>
+            <h1>Your account, wherever you go.</h1>
+            <p className="muted">
+              Authorize origin-bound passkeys with Google without revealing your identity onchain.
+              Once connected, every action is approved by your authenticator—not a backend.
+            </p>
+            <div className="actions">
+              <button className="primary-button blue" onClick={() => navigate("/devices")}>
+                Manage my devices
+              </button>
+              <button className="secondary-button" onClick={() => navigate("/lab")}>
+                Open developer lab
               </button>
             </div>
+          </Card>
+          <div className="grid three">
+            <Card className="feature-card" eyebrow="01" title="Private by design">
+              <p>Your Google subject stays inside a local zero-knowledge proof.</p>
+              <span className="pill">Browser proved</span>
+            </Card>
+            <Card className="feature-card" eyebrow="02" title="Portable across apps">
+              <p>Independent origins resolve the same deterministic ERC-4337 account.</p>
+              <span className="pill">No seed export</span>
+            </Card>
+            <Card className="feature-card" eyebrow="03" title="Passkey secured">
+              <p>Every transaction requires a fresh user-verified WebAuthn assertion.</p>
+              <span className="pill">Self custody</span>
+            </Card>
+          </div>
+        </div>
+      )}
+
+      {route === "/authorize" && (
+        <div className="journey">
+          <PageIntro
+            eyebrow="Secure handoff"
+            title="Authorize this app."
+            description="Review the independent origin, prove your Google identity privately, and add its passkey to your smart account."
+          />
+          {!requestChecked && (
+            <StatusPanel tone="busy">Validating the incoming authorization request…</StatusPanel>
           )}
-        </section>
-      )}
-      {pendingDevice && !returnUrl && (
-        <section>
-          <strong>Device queued</strong>
-          <span>
-            Ready at {new Date(pendingDevice.readyAt * 1000).toLocaleString()} unless approved
-            sooner.
-          </span>
-          <small>
-            This device was authorized by Google but the account already has another device to
-            protect, so it's queued behind a security delay. An already-authorized device can
-            approve it instantly instead of waiting.
-          </small>
-          <div className="actions compact">
-            <button disabled={busy || !bundlerUrl} onClick={() => void approvePendingDeviceNow()}>
-              Approve now with a known device
-            </button>
-            {request && (
-              <button
-                disabled={busy}
-                className="secondary"
-                onClick={() => returnToRequestingApp(pendingDevice.account, pendingDevice.device)}
+          {requestChecked && !request && (
+            <Card className="hero-card">
+              <EmptyState
+                title="No authorization request found"
+                action={
+                  <button className="secondary-button" onClick={() => navigate("/")}>
+                    Return home
+                  </button>
+                }
               >
-                Continue to requesting app anyway
-              </button>
-            )}
-          </div>
-          <small>
-            Checks this browser's approval cache and its saved passkey for the requested account.
-            If neither is authorized, open Demo A on a device that's already authorized, or wait
-            for the delay.
-          </small>
-        </section>
-      )}
-      {returnUrl && (
-        <section>
-          <strong>Request complete</strong>
-          <a className="button-link" href={returnUrl}>
-            Return to requesting app
-          </a>
-        </section>
-      )}
-      {account && (
-        <section>
-          <strong>Smart account</strong>
-          <span>{account}</span>
-          <span>
-            Balance: {formatEther(balance)} {network.chain.name} ETH
-          </span>
-          <span>Passkey device: {device?.address ?? "Create or load a passkey"}</span>
-          {device && <span>Key protection: native WebAuthn P-256 credential</span>}
-          <span>Authorized: {authorized ? "yes" : "no"}</span>
-        </section>
-      )}
-      {proof && (
-        <section>
-          <strong>Private proof</strong>
-          <span>Identity commitment: {proof.publicInputs[0]}</span>
-          <span>Proof size: {(proof.proof.length - 2) / 2} bytes</span>
-          <span>Google subject remains private</span>
-        </section>
-      )}
-      {!bundlerUrl && (
-        <small>
-          Configure the {network.chain.name} ERC-4337 bundler URL with EntryPoint v0.8 support.
-          Account prediction and proof generation work without it.
-        </small>
-      )}
-      <small>
-        Only public credential metadata is stored. Every transaction or message signature requires a
-        fresh user-verified WebAuthn assertion.
-      </small>
-
-      <hr className="divider" />
-
-      <section>
-        <strong>Manage devices with Google</strong>
-        <p>
-          Resolve any account with Google and review its authorized devices by cleartext RP ID.
-          Revoking a device, approving one, or rejecting one still queued behind the security delay
-          all require an already-authorized device in this browser (checked automatically).
-        </p>
-        <div className="actions">
-          <button disabled={dashboardBusy} onClick={() => void lookupAccount()}>
-            Look up account
-          </button>
-        </div>
-        <div ref={dashboardButton} className={`google-button${dashboardBusy ? " visible" : ""}`} />
-        {dashboardStatus && (
-          <div className="status-banner" data-tone={statusTone(dashboardStatus, dashboardBusy)}>
-            <span className="status-icon" />
-            <div className="status-banner-body">
-              <span>{dashboardStatus}</span>
-            </div>
-          </div>
-        )}
-        {dashboardAccount && <span>Account: {dashboardAccount}</span>}
-        {dashboardAccount && dashboardDevices.length > 0 && (
-          <>
-            <ul className="device-list">
-              {dashboardDevices.map((authorizedDevice) => (
-                <li key={authorizedDevice.address}>
-                  <span>{authorizedDevice.rpId}</span>
-                  <small>{authorizedDevice.address}</small>
-                  {device && (
+                {status === "Ready"
+                  ? "Start from an app that uses zkAccount. Its signed handoff details will appear here for review."
+                  : status}
+              </EmptyState>
+            </Card>
+          )}
+          {request && (
+            <Card className="hero-card">
+              <Steps
+                steps={["Review", "Google", "Prove", "Authorize", "Done"]}
+                active={authorizationStep(authorizationPhase)}
+              />
+              {returnUrl && authorizationOutcome && authorizationCopy ? (
+                <div className="centered">
+                  <div className="completion-mark" data-outcome={authorizationOutcome}>
+                    {authorizationCopy.mark}
+                  </div>
+                  <h2>{authorizationCopy.title}</h2>
+                  <p className="muted">{authorizationCopy.description}</p>
+                  <div className="actions">
+                    <a className="button-link primary-button blue" href={returnUrl}>
+                      Return to {request.callback.host}
+                    </a>
+                  </div>
+                </div>
+              ) : pendingDevice ? (
+                <div>
+                  <span className="eyebrow">Security delay</span>
+                  <h2 style={{ marginTop: 10 }}>This device is queued</h2>
+                  <p className="muted">
+                    It becomes active at {new Date(pendingDevice.readyAt * 1000).toLocaleString()},
+                    or an existing device can approve it now.
+                  </p>
+                  <StatusPanel tone={statusTone(status, busy)}>{status}</StatusPanel>
+                  <div className="actions">
                     <button
-                      disabled={dashboardBusy || !bundlerUrl}
-                      className="danger"
-                      onClick={() => void revokeDashboardDevice(authorizedDevice.address)}
+                      className="primary-button"
+                      disabled={busy || !bundlerUrl}
+                      onClick={() => void approvePendingDeviceNow()}
                     >
-                      {revokingDevice === authorizedDevice.address ? "Revoking…" : "Revoke"}
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
-            {device && (
-              <div className="actions compact">
-                <button
-                  disabled={dashboardBusy || !bundlerUrl}
-                  className="danger"
-                  onClick={() => void revokeAllDashboardDevices()}
-                >
-                  Revoke all devices
-                </button>
-              </div>
-            )}
-          </>
-        )}
-        {dashboardAccount && dashboardPendingDevices.length > 0 && (
-          <>
-            <strong>Pending devices</strong>
-            <ul className="device-list">
-              {dashboardPendingDevices.map((pending) => (
-                <li key={pending.address}>
-                  <span>{pending.rpId}</span>
-                  <small>{pending.address}</small>
-                  <small>Ready at {new Date(pending.readyAt * 1000).toLocaleString()}</small>
-                  <div className="actions compact">
-                    <button
-                      disabled={dashboardBusy}
-                      onClick={() => void resolvePendingDashboardDevice(pending.address, "approve")}
-                    >
-                      {resolvingPendingDevice === pending.address ? "Working…" : "Approve"}
+                      Approve with a known device
                     </button>
                     <button
-                      disabled={dashboardBusy}
-                      className="danger"
-                      onClick={() => void resolvePendingDashboardDevice(pending.address, "reject")}
+                      className="secondary-button"
+                      disabled={busy}
+                      onClick={() =>
+                        returnToRequestingApp(pendingDevice.account, pendingDevice.device)
+                      }
                     >
-                      {resolvingPendingDevice === pending.address ? "Working…" : "Reject"}
+                      Return while pending
                     </button>
                   </div>
-                </li>
-              ))}
-            </ul>
-          </>
-        )}
-      </section>
+                </div>
+              ) : (
+                <div className="stack">
+                  <div className="request-summary">
+                    <KeyValue label="Requesting app" value={request.callback.host} />
+                    <KeyValue label="Passkey domain" value={request.rpId} />
+                    <KeyValue label="Network" value={network.chain.name} />
+                    <KeyValue label="Action" value="Add a passkey" />
+                  </div>
+                  <div className="privacy-callout">
+                    <b>Private proof</b>
+                    <span>
+                      The Google ID token and subject never leave this browser and are not written
+                      onchain.
+                    </span>
+                  </div>
+                  {busy && authorizationPhase === "prove" && (
+                    <div className="proof-visual">
+                      <span>LOCAL ZK</span>
+                    </div>
+                  )}
+                  <div ref={button} className={`google-button${signingIn ? " visible" : ""}`} />
+                  <StatusPanel tone={statusTone(status, busy)}>{status}</StatusPanel>
+                  {account && (
+                    <AddressDisplay label="Deterministic smart account" value={account} />
+                  )}
+                  {account && (
+                    <div className="account-strip">
+                      <KeyValue label="Balance" value={`${formatEther(balance)} ETH`} />
+                      <KeyValue label="Device" value={authorized ? "Active" : "Not active"} />
+                      <KeyValue label="Network" value={network.chain.name} />
+                    </div>
+                  )}
+                  <div className="actions">
+                    {!device && (
+                      <button
+                        className="primary-button blue"
+                        disabled={busy}
+                        onClick={() => void approveRequest()}
+                      >
+                        Continue with Google
+                      </button>
+                    )}
+                    {device && !proof && !authorized && !busy && (
+                      <button className="primary-button blue" onClick={() => void start(device)}>
+                        Try Google again
+                      </button>
+                    )}
+                    {proof && !authorized && (
+                      <button
+                        className="primary-button blue"
+                        disabled={busy || !bundlerUrl}
+                        onClick={() => void authorizeDevice()}
+                      >
+                        Authorize on {network.chain.name}
+                      </button>
+                    )}
+                    {authorized && (
+                      <button
+                        className="primary-button blue"
+                        disabled={busy || !account || !device}
+                        onClick={() =>
+                          account && device && returnToRequestingApp(account, device.address)
+                        }
+                      >
+                        Complete request
+                      </button>
+                    )}
+                    <button className="danger-button" disabled={busy} onClick={rejectRequest}>
+                      Reject request
+                    </button>
+                    {account && (
+                      <button
+                        className="secondary-button"
+                        disabled={busy}
+                        onClick={() => void refresh()}
+                      >
+                        Refresh balance
+                      </button>
+                    )}
+                  </div>
+                  {proof && (
+                    <TechnicalDetails summary="View private-proof details">
+                      <KeyValue label="Identity commitment" value={proof.publicInputs[0]} mono />
+                      <KeyValue
+                        label="Proof size"
+                        value={`${(proof.proof.length - 2) / 2} bytes`}
+                      />
+                      <KeyValue
+                        label="Authorization expires"
+                        value={new Date(
+                          Number(BigInt(proof.publicInputs[5])) * 1000,
+                        ).toLocaleString()}
+                      />
+                      <KeyValue label="Passkey device" value={device?.address ?? "—"} mono />
+                    </TechnicalDetails>
+                  )}
+                  {!bundlerUrl && (
+                    <StatusPanel tone="warning">
+                      Configure an EntryPoint v0.8 bundler URL to submit authorization. Prediction
+                      and proof generation still work.
+                    </StatusPanel>
+                  )}
+                </div>
+              )}
+            </Card>
+          )}
+        </div>
+      )}
 
-      <footer className="legal-links">
-        <a href="/privacy.html">Privacy policy</a>
-      </footer>
-      </main>
-    </>
+      {route === "/devices" && (
+        <div className="device-page">
+          <PageIntro
+            eyebrow="Account security"
+            title="Your trusted devices."
+            description="Resolve your account privately with Google, then review active and time-delayed passkeys by their domain."
+            aside={networkControl}
+          />
+          <div className="split">
+            <Card title="Device access" eyebrow="Google account">
+              <p className="muted">
+                Google is used only to locate the deterministic account. Approving or removing a
+                device still requires an authorized passkey in this browser.
+              </p>
+              <div className="actions">
+                <button
+                  className="primary-button blue"
+                  disabled={dashboardBusy}
+                  onClick={() => void lookupAccount()}
+                >
+                  Continue with Google
+                </button>
+              </div>
+              <div
+                ref={dashboardButton}
+                className={`google-button${dashboardBusy ? " visible" : ""}`}
+              />
+              {dashboardStatus && (
+                <StatusPanel tone={statusTone(dashboardStatus, dashboardBusy)}>
+                  {dashboardStatus}
+                </StatusPanel>
+              )}
+              {dashboardAccount && (
+                <div style={{ marginTop: 16 }}>
+                  <AddressDisplay label="Smart account" value={dashboardAccount} />
+                </div>
+              )}
+            </Card>
+            <Card title="Security model" eyebrow="What stays private">
+              <p className="muted">
+                The account address and public credential metadata are visible. Your Google subject,
+                token, proof, and authenticator key remain private.
+              </p>
+              <span className="pill">User verified</span>
+            </Card>
+          </div>
+          {dashboardAccount && (
+            <div className="grid" style={{ marginTop: 18 }}>
+              <Card title={`Active devices · ${dashboardDevices.length}`} eyebrow="Authorized">
+                {dashboardDevices.length === 0 ? (
+                  <p className="muted">No active devices were found.</p>
+                ) : (
+                  <ul className="device-list">
+                    {dashboardDevices.map((item) => (
+                      <li className="device-row" key={item.address}>
+                        <div>
+                          <b>{item.rpId}</b>
+                          <code>{item.address}</code>
+                        </div>
+                        <button
+                          className="danger-button"
+                          disabled={dashboardBusy || !bundlerUrl}
+                          onClick={() => void revokeDashboardDevice(item.address)}
+                        >
+                          {revokingDevice === item.address ? "Revoking…" : "Revoke"}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {dashboardDevices.length > 0 && (
+                  <div className="actions">
+                    <button
+                      className="danger-button"
+                      disabled={dashboardBusy || !bundlerUrl}
+                      onClick={() => void revokeAllDashboardDevices()}
+                    >
+                      Revoke all devices
+                    </button>
+                  </div>
+                )}
+              </Card>
+              <Card
+                title={`Pending devices · ${dashboardPendingDevices.length}`}
+                eyebrow="Security delay"
+              >
+                {dashboardPendingDevices.length === 0 ? (
+                  <p className="muted">No devices are waiting for approval.</p>
+                ) : (
+                  <ul className="device-list">
+                    {dashboardPendingDevices.map((pending) => (
+                      <li className="device-row" key={pending.address}>
+                        <div>
+                          <b>{pending.rpId}</b>
+                          <code>{pending.address}</code>
+                          <small>Ready {new Date(pending.readyAt * 1000).toLocaleString()}</small>
+                        </div>
+                        <div className="actions">
+                          <button
+                            className="secondary-button"
+                            disabled={dashboardBusy}
+                            onClick={() =>
+                              void resolvePendingDashboardDevice(pending.address, "approve")
+                            }
+                          >
+                            {resolvingPendingDevice === pending.address ? "Working…" : "Approve"}
+                          </button>
+                          <button
+                            className="danger-button"
+                            disabled={dashboardBusy}
+                            onClick={() =>
+                              void resolvePendingDashboardDevice(pending.address, "reject")
+                            }
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Card>
+            </div>
+          )}
+        </div>
+      )}
+
+      {route === "/lab" && (
+        <div>
+          <PageIntro
+            eyebrow="Developer tools"
+            title="Protocol lab."
+            description="Exercise the standalone passkey and ERC-4337 paths while keeping implementation detail out of the primary authorization journey."
+            aside={networkControl}
+          />
+          <div className="split">
+            <Card title="Local device" eyebrow="Standalone flow">
+              <p className="muted">
+                Create or load this origin’s passkey, then resolve and authorize the account with
+                Google.
+              </p>
+              <div className="actions">
+                <button
+                  className="primary-button"
+                  disabled={busy}
+                  onClick={() => void loadPasskey(false)}
+                >
+                  Load stored passkey
+                </button>
+                <button
+                  className="secondary-button"
+                  disabled={busy}
+                  onClick={() => void loadPasskey(true)}
+                >
+                  Create passkey
+                </button>
+              </div>
+              <div ref={button} className={`google-button${signingIn ? " visible" : ""}`} />
+              <div style={{ marginTop: 18 }}>
+                <StatusPanel tone={statusTone(status, busy)}>{status}</StatusPanel>
+              </div>
+            </Card>
+            <Card title="Onchain actions" eyebrow="ERC-4337">
+              <div className="actions">
+                {proof && !authorized && (
+                  <button
+                    className="primary-button blue"
+                    disabled={busy || !bundlerUrl}
+                    onClick={() => void authorizeDevice()}
+                  >
+                    Deploy / authorize
+                  </button>
+                )}
+                {account && (
+                  <button
+                    className="secondary-button"
+                    disabled={busy}
+                    onClick={() => void refresh()}
+                  >
+                    Refresh
+                  </button>
+                )}
+                {authorized && (
+                  <button
+                    className="primary-button"
+                    disabled={busy || !bundlerUrl}
+                    onClick={() => void sendSelfTransaction()}
+                  >
+                    Send 0 ETH to self
+                  </button>
+                )}
+                {authorized && (
+                  <button
+                    className="danger-button"
+                    disabled={busy || !bundlerUrl}
+                    onClick={() => void revokeLocalDevice()}
+                  >
+                    Revoke this device
+                  </button>
+                )}
+                {authorized && (
+                  <button
+                    className="danger-button"
+                    disabled={busy || !bundlerUrl}
+                    onClick={() => void revokeAllLocalDevices()}
+                  >
+                    Revoke all devices
+                  </button>
+                )}
+              </div>
+              {!bundlerUrl && (
+                <StatusPanel tone="warning">
+                  Configure an EntryPoint v0.8 bundler URL to submit authorization or onchain
+                  actions.
+                </StatusPanel>
+              )}
+            </Card>
+          </div>
+          {(account || device || proof) && (
+            <Card title="Development claims" eyebrow="Current runtime" className="">
+              <div className="grid three">
+                <KeyValue label="Account" value={account ?? "Not resolved"} mono />
+                <KeyValue label="Balance" value={`${formatEther(balance)} ETH`} />
+                <KeyValue label="Authorized" value={authorized ? "Yes" : "No"} />
+                <KeyValue label="Passkey device" value={device?.address ?? "Not loaded"} mono />
+                <KeyValue label="Protection" value={device ? "Native WebAuthn P-256" : "—"} />
+                <KeyValue
+                  label="Google subject input"
+                  value={login?.claims.sub ?? "Available after Google login"}
+                  mono
+                />
+              </div>
+              {proof && (
+                <TechnicalDetails summary="Proof and public inputs">
+                  <KeyValue label="Identity commitment" value={proof.publicInputs[0]} mono />
+                  <KeyValue label="Proof size" value={`${(proof.proof.length - 2) / 2} bytes`} />
+                  <KeyValue
+                    label="Authorization expires"
+                    value={new Date(Number(BigInt(proof.publicInputs[5])) * 1000).toLocaleString()}
+                  />
+                </TechnicalDetails>
+              )}
+            </Card>
+          )}
+        </div>
+      )}
+    </AppShell>
   );
 }
 
-function statusTone(message: string, busy: boolean): "busy" | "success" | "error" | "warning" | "idle" {
+function statusTone(message: string, busy: boolean): StatusTone {
   if (busy) return "busy";
   const lower = message.toLowerCase();
   if (/(fail|error|reject|not found|no stored)/.test(lower)) return "error";

@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { decodeAbiParameters, decodeFunctionData, getAddress, parseAbi, type Hex } from "viem";
 import {
   addDeviceCall,
+  blockRangeChunks,
   googleSignature,
   GOOGLE_LOGIN_RACE_MESSAGE,
   GoogleLoginRaceError,
   Google4337Client,
   JsonRpcBundlerClient,
+  mapWithConcurrency,
 } from "../src/userop";
 import { deviceIdentifier, type DeviceKey } from "../src/account";
 
@@ -71,6 +73,19 @@ assert.equal(
   raceError.message,
   "Another Google login completed first. Sign in with Google again to generate a fresh authorization.",
 );
+assert.deepEqual(blockRangeChunks(10_000n, 12_500n, 1_000n), [
+  { fromBlock: 10_000n, toBlock: 10_999n },
+  { fromBlock: 11_000n, toBlock: 11_999n },
+  { fromBlock: 12_000n, toBlock: 12_500n },
+]);
+assert.deepEqual(blockRangeChunks(10_000n, 10_000n), [{ fromBlock: 10_000n, toBlock: 10_000n }]);
+assert.deepEqual(blockRangeChunks(10_001n, 10_000n), []);
+assert.throws(() => blockRangeChunks(0n, 1n, 0n), /must be positive/);
+assert.deepEqual(blockRangeChunks(0n, 12_000n), [
+  { fromBlock: 0n, toBlock: 4_999n },
+  { fromBlock: 5_000n, toBlock: 9_999n },
+  { fromBlock: 10_000n, toBlock: 12_000n },
+]);
 
 const field = (value: bigint): Hex => `0x${value.toString(16).padStart(64, "0")}`;
 const authorizationProof = {
@@ -167,6 +182,89 @@ try {
   );
 } finally {
   globalThis.fetch = originalFetch;
+}
+
+{
+  const deviceA = device;
+  const deviceB = getAddress("0x4444444444444444444444444444444444444444");
+  const factoryDeploymentBlock = 100n;
+  const deploymentBlock = 150n;
+  let latestBlock = 200n;
+  let accountCreatedCalls = 0;
+  const deviceSetCalls: Array<{ fromBlock: bigint; toBlock: bigint }> = [];
+  const deviceSetLogs: Array<{
+    blockNumber: bigint;
+    args: { device: string; enabled: boolean; rpId: string };
+  }> = [{ blockNumber: 160n, args: { device: deviceA, enabled: true, rpId: "x" } }];
+
+  const client = new Google4337Client({
+    factory,
+    bundlerUrl: "https://bundler.example",
+    rpcUrl: "http://localhost:8646",
+    factoryDeploymentBlock,
+  });
+  Object.assign(client.publicClient, {
+    getBlockNumber: async () => latestBlock,
+    getCode: async () => "0x1234",
+    getContractEvents: async (options: {
+      eventName: string;
+      fromBlock: bigint;
+      toBlock: bigint;
+    }) => {
+      if (options.eventName === "AccountCreated") {
+        accountCreatedCalls++;
+        if (deploymentBlock >= options.fromBlock && deploymentBlock <= options.toBlock) {
+          return [{ blockNumber: deploymentBlock, args: { identity: "0x00", account } }];
+        }
+        return [];
+      }
+      if (options.eventName === "DeviceSet") {
+        deviceSetCalls.push({ fromBlock: options.fromBlock, toBlock: options.toBlock });
+        return deviceSetLogs
+          .filter((log) => log.blockNumber >= options.fromBlock && log.blockNumber <= options.toBlock)
+          .map((log) => ({ args: log.args }));
+      }
+      throw new Error(`Unexpected event query: ${options.eventName}`);
+    },
+  });
+
+  const firstScan = await client.listAuthorizedDevices(account);
+  assert.deepEqual(
+    firstScan.map((entry) => entry.address),
+    [deviceA],
+  );
+  assert.equal(accountCreatedCalls, 1);
+  assert.deepEqual(deviceSetCalls, [{ fromBlock: deploymentBlock, toBlock: latestBlock }]);
+
+  const previousLatestBlock = latestBlock;
+  latestBlock = 250n;
+  deviceSetLogs.push({ blockNumber: 220n, args: { device: deviceB, enabled: true, rpId: "y" } });
+  const secondScan = await client.listAuthorizedDevices(account);
+  assert.deepEqual(
+    secondScan.map((entry) => entry.address).sort(),
+    [deviceA, deviceB].sort(),
+  );
+  assert.equal(accountCreatedCalls, 1, "deployment block lookup must not repeat once cached");
+  assert.deepEqual(deviceSetCalls, [
+    { fromBlock: deploymentBlock, toBlock: previousLatestBlock },
+    { fromBlock: previousLatestBlock + 1n, toBlock: latestBlock },
+  ]);
+}
+
+{
+  const order: number[] = [];
+  let maxInFlight = 0;
+  let inFlight = 0;
+  const results = await mapWithConcurrency([1, 2, 3, 4, 5], 2, async (item) => {
+    inFlight++;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise((resolve) => setTimeout(resolve, item % 2 === 0 ? 1 : 5));
+    inFlight--;
+    order.push(item);
+    return item * 2;
+  });
+  assert.deepEqual(results, [2, 4, 6, 8, 10]);
+  assert.ok(maxInFlight <= 2, `expected at most 2 concurrent calls, saw ${maxInFlight}`);
 }
 
 process.stdout.write("UserOperation encoding tests passed\n");
